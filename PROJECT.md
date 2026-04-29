@@ -66,6 +66,7 @@ llm-wiki/
 │       ├── wiki-query/            ← запросы к wiki (3 режима)
 │       ├── wiki-lint/             ← read-only ревьюер
 │       ├── save/                  ← файлирование разговоров
+│       ├── defuddle/              ← очистка URL → дословный markdown
 │       ├── obsidian-markdown/     ← reference: Obsidian Flavored Markdown
 │       └── obsidian-bases/        ← reference: Obsidian Bases (.base files)
 │
@@ -248,8 +249,8 @@ Pattern взят из референсного проекта `claude-obsidian` 
 
 #### URL и image ingestion
 
-- URL (`https://...`) → WebFetch → save to `raw/articles/[slug]-[YYYY-MM-DD].md` → продолжить как обычный source
-- Image (`.png`/`.jpg`/...) → Read native → описать → save to `raw/images/[slug]-[YYYY-MM-DD].md` → копия в `_attachments/` → продолжить
+- **URL** (`https://...`) → дедуп по `source_url` в `ingested.json` → `defuddle parse [url] --markdown` (дословный текст с сохранёнными картинками-ссылками и LaTeX-формулами) → save to `raw/articles/[slug]-[YYYY-MM-DD].md` с frontmatter (`source_url`, `fetched`) → продолжить synthesis. Hash для дедупа считается **только от тела** без frontmatter, чтобы тот же URL без изменений на странице давал тот же hash независимо от даты.
+- **Image** (`.png`/`.jpg`/...) → Read native → описать → save to `raw/images/[slug]-[YYYY-MM-DD].md` → копия в `_attachments/` → продолжить
 
 #### 8 фаз synthesis workflow
 
@@ -404,13 +405,28 @@ Workflow:
 9. Дописать в log.md
 10. Обновить cache.md
 
-### 5.6 obsidian-markdown — reference
+### 5.6 defuddle — очистка URL для ingestion
+
+**Файл:** `.claude/skills/defuddle/SKILL.md`
+
+CLI-обёртка над утилитой [defuddle](https://github.com/kepano/defuddle) (от kepano, на базе Mozilla Readability + custom-чистильщики). Используется в URL ingestion как **единственный** инструмент очистки.
+
+**Что делает:**
+- Принимает URL → возвращает markdown с дословным текстом статьи
+- Сохраняет: текст, заголовки, списки, таблицы, code blocks, формулы LaTeX, ссылки на картинки
+- Удаляет: nav, sidebar, ads, cookie banners, footer, share-кнопки, related articles, скрипты
+
+**Что НЕ делает:** не суммаризирует, не интерпретирует. Чистый strip + HTML→markdown.
+
+**Установка:** `npm install -g defuddle`. Зависимость от Node.js. Защищает проект от использования Anthropic-овского WebFetch, который возвращает суммаризацию вместо дословного текста.
+
+### 5.7 obsidian-markdown — reference
 
 **Файл:** `.claude/skills/obsidian-markdown/SKILL.md` (188 строк)
 
 Референс по корректному Obsidian Flavored Markdown: wikilinks, embeds, properties, теги, math, таблицы, mermaid. Используется другими скиллами при создании страниц.
 
-### 5.7 obsidian-bases — reference
+### 5.8 obsidian-bases — reference
 
 **Файл:** `.claude/skills/obsidian-bases/SKILL.md` (299 строк)
 
