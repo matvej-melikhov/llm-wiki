@@ -62,9 +62,9 @@ llm-wiki/
 │   ├── commands/                  ← кастомные slash-команды (пусто)
 │   └── skills/
 │       ├── wiki/                  ← маршрутизатор + frontmatter-схема
-│       ├── wiki-ingest/           ← синтез источников (8-фазный workflow)
-│       ├── wiki-query/            ← запросы к wiki (3 режима)
-│       ├── wiki-lint/             ← read-only ревьюер
+│       ├── ingest/                ← синтез источников (8-фазный workflow)
+│       ├── query/                 ← запросы к wiki (3 режима)
+│       ├── lint/                  ← read-only ревьюер
 │       ├── save/                  ← файлирование разговоров
 │       ├── defuddle/              ← очистка URL → дословный markdown
 │       ├── obsidian-markdown/     ← reference: Obsidian Flavored Markdown
@@ -200,18 +200,18 @@ updated: YYYY-MM-DD
 
 | Пользователь сказал | Операция | Под-скилл |
 |---|---|---|
-| "ingest [источник]", `/ingest` | INGEST | `wiki-ingest` |
-| "что ты знаешь о X", `/query` | QUERY | `wiki-query` |
-| "lint", `/lint` | LINT | `wiki-lint` |
+| "ingest [источник]", `/ingest` | INGEST | `ingest` |
+| "что ты знаешь о X", `/query` | QUERY | `query` |
+| "lint", `/lint` | LINT | `lint` |
 | "сохрани это", `/save` | SAVE | `save` |
 
 Также описывает архитектуру (3 уровня), структуру `wiki/`, формат cache.md, кросс-проектное использование (как читать эту wiki из других Claude Code-проектов).
 
-### 5.2 wiki-ingest — синтез источников (8-фазный workflow)
+### 5.2 ingest — синтез источников (8-фазный workflow)
 
 **Структура (router + references):**
 ```
-.claude/skills/wiki-ingest/
+.claude/skills/ingest/
 ├── SKILL.md                    ~120 строк — точка входа, роутинг
 └── references/
     ├── dedup.md                ~75 строк — manifest и hash-проверки
@@ -274,7 +274,7 @@ Pattern взят из референсного проекта `claude-obsidian` 
 | 5. Связать страницы | frontmatter (sources/related/tags/domain) + inline wikilinks при первом упоминании. |
 | 6. Инфраструктура | Обновить index.md (вставить строки в таблицы), log.md (новая запись сверху), cache.md (перезаписать), summary.md (счётчики). |
 | 7. Domain proposal | Если тег ≥10 страниц и нет domain-страницы → предложить создать. По согласию — создать MOC + back-fill `domain:` на всех тегированных страницах. |
-| 8. Lint review | Вызвать `wiki-lint` (read-only) → прочитать `open_issues` → применить auto-fix молча, спросить ask-issues батчем, оставить skip. Пере-хешировать wiki, перезаписать `lint-state.json`. |
+| 8. Lint review | Вызвать `lint` (read-only) → прочитать `open_issues` → применить auto-fix молча, спросить ask-issues батчем, оставить skip. Пере-хешировать wiki, перезаписать `lint-state.json`. |
 
 #### Критерии гранулярности (Phase 3)
 
@@ -307,9 +307,9 @@ Pattern взят из референсного проекта `claude-obsidian` 
 
 При отказе ничего не сохраняется — следующий ingest предложит снова.
 
-### 5.3 wiki-query — запросы (3 режима)
+### 5.3 query — запросы (3 режима)
 
-**Файл:** `.claude/skills/wiki-query/SKILL.md` (187 строк)
+**Файл:** `.claude/skills/query/SKILL.md` (187 строк)
 
 Отвечает на вопросы из накопленной wiki. Стратегия: читать минимум необходимого, идти от дешёвого к дорогому.
 
@@ -339,9 +339,9 @@ Pattern взят из референсного проекта `claude-obsidian` 
 
 Хорошие ответы предлагается сохранить как `wiki/questions/<title>.md`. Frontmatter включает `question:`, `answer_quality`, `related`, `sources`.
 
-### 5.4 wiki-lint — read-only ревьюер
+### 5.4 lint — read-only ревьюер
 
-**Файл:** `.claude/skills/wiki-lint/SKILL.md` (174 строки)
+**Файл:** `.claude/skills/lint/SKILL.md` (174 строки)
 
 **Только читает.** Записывает результат в `wiki/meta/lint-state.json`. Никогда не модифицирует content-файлы.
 
@@ -374,7 +374,7 @@ Pattern взят из референсного проекта `claude-obsidian` 
 
 #### Категории issues
 
-Каждый issue имеет `type`. По типу `wiki-ingest` решает, как поступить:
+Каждый issue имеет `type`. По типу `ingest` решает, как поступить:
 
 **Auto-fix** (детерминистические нарушения схемы — единственный очевидный fix):
 - `status-not-in-enum`, `status-on-entity`, `legacy-field`, `lowercase-tags`, `inline-tags`, `raw-link-with-extension`, `raw-ref-in-body`, `empty-sources-section`
@@ -568,7 +568,7 @@ view: table
 }
 ```
 
-Используется `wiki-ingest` для дедупа (не ingest того же файла дважды).
+Используется `ingest` для дедупа (не ingest того же файла дважды).
 
 ### `wiki/meta/lint-state.json`
 
@@ -585,7 +585,7 @@ view: table
 }
 ```
 
-Используется `wiki-lint` для skip-check и `wiki-ingest` (Phase 8 / `--fix`) для применения правок.
+Используется `lint` для skip-check и `ingest` (Phase 8 / `--fix`) для применения правок.
 
 ---
 
@@ -596,18 +596,18 @@ view: table
 ```
 Пользователь: /ingest raw/RLHF.md
                 ↓
-[wiki-ingest]
+[ingest]
 1. Считать sha256 источника
 2. Проверить raw/meta/ingested.json — новый? → продолжить
 3. Phase 1-7: synthesis, граулярность, страницы, связи, infra, domain proposal
-8. Phase 8: вызвать wiki-lint
+8. Phase 8: вызвать lint
                 ↓
-[wiki-lint, read-only]
+[lint, read-only]
 - скан wiki/**/*.md
 - собрать issues
 - записать в wiki/meta/lint-state.json
                 ↓
-[wiki-ingest продолжает]
+[ingest продолжает]
 - прочитать open_issues
 - auto-fix → применить молча
 - ask → батч-вопрос пользователю → применить ответы
@@ -625,7 +625,7 @@ view: table
 Пользователь руками отредактировал wiki/ideas/X.md в Obsidian
 Пользователь: /lint
                 ↓
-[wiki-lint]
+[lint]
 - посчитать текущий wiki_hash
 - сравнить с lint-state.json
 - не совпал → full audit
@@ -634,7 +634,7 @@ view: table
                 ↓
 Пользователь: /ingest --fix
                 ↓
-[wiki-ingest --fix]
+[ingest --fix]
 - прочитать open_issues из lint-state.json
 - применить auto-fix молча, ask батчем, skip оставить
 - пере-хешировать, перезаписать lint-state.json
@@ -647,7 +647,7 @@ view: table
 ```
 Пользователь: /lint
                 ↓
-[wiki-lint]
+[lint]
 - посчитать текущий wiki_hash
 - совпал с lint-state.json + open_issues пуст → "Wiki не менялась, чисто. Пропускаю."
                 ↓
@@ -659,7 +659,7 @@ view: table
 ```
 Пользователь: /query что такое PPO?
                 ↓
-[wiki-query, standard]
+[query, standard]
 1. Прочитать cache.md → есть ответ?
 2. Прочитать index.md → найти строку про PPO в таблице Ideas
 3. (Если есть) прочитать domains/Reinforcement Learning.md
@@ -682,11 +682,13 @@ view: table
 "permissions": {
   "allow": [
     "Edit(/.claude/skills/wiki/**)",
-    "Edit(/.claude/skills/wiki-ingest/**)",
+    "Edit(/.claude/skills/ingest/**)",
+    "Edit(/.claude/skills/query/**)",
+    "Edit(/.claude/skills/lint/**)",
     "Edit(/.claude/skills/save/**)",
+    "Edit(/.claude/skills/defuddle/**)",
     "Edit(/.claude/skills/obsidian-bases/**)",
-    "Edit(/.claude/skills/wiki-query/**)",
-    "Edit(/.claude/skills/wiki-lint/**)"
+    "Edit(/.claude/skills/obsidian-markdown/**)"
   ]
 }
 ```
@@ -816,7 +818,7 @@ Core: bases (включён), canvas, daily-notes, audio-recorder, sync.
 - Регистр тегов: аббревиатуры заглавными
 - Запрет raw-refs в теле страниц (только во frontmatter `sources`)
 - Index в формате `| Страница | Суть |` с одной строкой саммари
-- Иерархия чтения wiki-query: cache → index → domain → страницы
+- Иерархия чтения query: cache → index → domain → страницы
 - Порог domain proposal поднят с 5 до 10
 
 ### Этап 8: Lint-цикл (a26a735 → 0f39010)
@@ -953,7 +955,7 @@ Wiki-контент пока **не закоммичен** в репозитор
 Соседний проект `/Users/melikhov.ma/Documents/diploma-concurrent/claude-obsidian` (Ar9av/claude-obsidian) — внешний референс. Из него заимствованы:
 
 - Pattern source-дедупа через `.raw/.manifest.json` → у нас `raw/meta/ingested.json`
-- 8-фазная структура synthesis workflow в wiki-ingest
+- 8-фазная структура synthesis workflow в ingest
 - Идея domain-страниц и Bases-запросов в них
 
 Не заимствовано (или адаптировано):
