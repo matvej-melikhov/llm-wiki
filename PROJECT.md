@@ -209,7 +209,18 @@ updated: YYYY-MM-DD
 
 ### 5.2 wiki-ingest — синтез источников (8-фазный workflow)
 
-**Файл:** `.claude/skills/wiki-ingest/SKILL.md` (~500 строк)
+**Структура (router + references):**
+```
+.claude/skills/wiki-ingest/
+├── SKILL.md                    ~120 строк — точка входа, роутинг
+└── references/
+    ├── dedup.md                ~75 строк — manifest и hash-проверки
+    ├── url-ingestion.md        ~90 строк — defuddle flow
+    ├── synthesis-phases.md     ~280 строк — фазы 1-7 детально
+    └── lint-fix.md             ~125 строк — Phase 8 + Fix-only mode
+```
+
+`SKILL.md` подгружается Claude'ом при триггере. Reference-документы — по нужде, что экономит токены при простых операциях (например, `/ingest --fix` грузит только `lint-fix.md`).
 
 Самый сложный скилл. Берёт raw-источник → строит карту знания → решает гранулярность → создаёт/обновляет страницы → связывает через wikilinks и frontmatter.
 
