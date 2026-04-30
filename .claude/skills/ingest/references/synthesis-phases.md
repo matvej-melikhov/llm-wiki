@@ -267,7 +267,6 @@
    ```
 5. Обновить `wiki/index.md` (добавить ссылку в секцию Domains).
 6. Обновить `wiki/cache.md` (упомянуть создание domain).
-7. **Перегенерировать цвета графа:** запустить `python3 bin/update-graph-colors.py`. Скрипт читает `wiki/domains/*.md`, считает hue для каждого домена через embeddings (или hash-fallback) и обновляет `colorGroups` в `.obsidian/graph.json`. Каждый домен на графе получает свой цвет.
 
 ### При отказе
 
