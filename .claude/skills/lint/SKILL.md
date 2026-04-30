@@ -103,6 +103,7 @@ Lint **только читает** wiki и записывает структур
 | `raw-link-with-extension` | `[[raw/X.md]]` вместо `[[raw/X]]` | `{type, where, link}` |
 | `raw-ref-in-body` | упоминание `[[raw/...]]` в теле страницы | `{type, where, link, line}` |
 | `empty-sources-section` | секция `## Источники`/`## Источники упоминания` содержит только `[[raw/...]]` | `{type, where, section}` |
+| `folder-type-mismatch` | страница лежит в `wiki/<X>/`, но `type:` во frontmatter не соответствует папке | `{type, where, current_type, expected_type}` |
 
 ### Ask user (ingest спрашивает решение)
 
@@ -144,6 +145,7 @@ Lint **только читает** wiki и записывает структур
 | 11 | `[[raw/X.md]]` (с расширением) в `sources` | auto-fix |
 | 12 | Raw-refs в теле страницы | auto-fix |
 | 13 | "Sources"-секция с одним raw | auto-fix |
+| 13.1 | Папка vs `type:` во frontmatter | auto-fix |
 | 14 | Пустые секции | skip |
 | 15 | Стилистические нарушения | skip |
 | 16 | Устаревшие записи в `index.md` (ведут на удалённые страницы) | ask |

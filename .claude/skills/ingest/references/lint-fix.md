@@ -57,6 +57,7 @@
 | `raw-link-with-extension` | `[[raw/X.md]]` → `[[raw/X]]` |
 | `raw-ref-in-body` | удалить wikilink из тела |
 | `empty-sources-section` | удалить секцию целиком вместе с заголовком |
+| `folder-type-mismatch` | переписать `type:` во frontmatter в значение `expected_type` (берётся из имени папки: `ideas`→`idea`, `entities`→`entity`, `questions`→`question`, `domains`→`domain`) |
 
 После каждой правки удалить соответствующий issue из `open_issues`.
 
