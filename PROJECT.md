@@ -79,7 +79,11 @@ llm-wiki/
 │   ├── themes/                    ← Claudian, Meridian, Minimal
 │   └── plugins/                   ← brat, claudian, terminal
 │
-└── bin/                           ← (зарезервировано под скрипты)
+└── bin/                           ← скрипты обслуживания
+    ├── setup.sh                   ← установка всех зависимостей (defuddle, pandoc, pymupdf4llm)
+    ├── requirements.txt           ← Python-зависимости
+    ├── transcribe.py              ← универсальный транскриптор (PDF/DOCX → markdown)
+    └── setup-vault.sh             ← (legacy)
 ```
 
 Уровневая модель из CLAUDE.md:
@@ -258,10 +262,22 @@ updated: YYYY-MM-DD
 
 Pattern взят из референсного проекта `claude-obsidian` (`.raw/.manifest.json`).
 
-#### URL и image ingestion
+#### Поддерживаемые форматы источников
 
+- **Markdown** (`.md`) — читается напрямую, базовый случай.
+- **PDF** (`.pdf`) — конвертируется через `pymupdf4llm`, транскрипт сохраняется рядом с оригиналом как `<file>.pdf.md`. Сохраняет таблицы, заголовки, базовое форматирование. Формулы и картинки частично теряются.
+- **DOCX** (`.docx`) — конвертируется через `pandoc`, транскрипт `<file>.docx.md`. Сохраняет структуру (заголовки, списки, таблицы).
 - **URL** (`https://...`) → дедуп по `source_url` в `ingested.json` → `defuddle parse [url] --markdown` (дословный текст с сохранёнными картинками-ссылками и LaTeX-формулами) → save to `raw/articles/[slug]-[YYYY-MM-DD].md` с frontmatter (`source_url`, `fetched`) → продолжить synthesis. Hash для дедупа считается **только от тела** без frontmatter, чтобы тот же URL без изменений на странице давал тот же hash независимо от даты.
-- **Image** (`.png`/`.jpg`/...) → Read native → описать → save to `raw/images/[slug]-[YYYY-MM-DD].md` → копия в `_attachments/` → продолжить
+- **Изображения** (`.png`/`.jpg`/...) → Read native → описать → save to `raw/images/[slug]-[YYYY-MM-DD].md` → копия в `_attachments/` → продолжить.
+
+**Универсальный транскриптор** `bin/transcribe.py`: по расширению определяет конвертер, пишет markdown-транскрипт рядом с оригиналом (`article.pdf` → `article.pdf.md`). Для бинарных форматов оригинальный файл остаётся в `raw/`, синтез работает по транскрипту, во `sources` wiki-страниц указываются **оба** wikilink — оригинал и транскрипт. Source-level дедуп идёт по hash оригинала.
+
+```bash
+python3 bin/transcribe.py raw/article.pdf      # создаст raw/article.pdf.md
+python3 bin/transcribe.py raw/notes.docx       # создаст raw/notes.docx.md
+```
+
+В будущем добавится поддержка аудио (`whisper-cpp`) и видео (`ffmpeg` + whisper) тем же скриптом.
 
 #### 8 фаз synthesis workflow
 

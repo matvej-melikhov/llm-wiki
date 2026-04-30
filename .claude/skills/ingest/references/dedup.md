@@ -31,13 +31,15 @@
 ### Для файла-источника (path)
 
 1. Если `raw/meta/ingested.json` отсутствует — создать `{"sources": {}}`.
-2. Посчитать `sha256sum raw/<path> | cut -d' ' -f1`.
+2. Посчитать hash источника:
+   - Markdown (`.md`) — `sha256sum raw/<path> | cut -d' ' -f1` — весь файл.
+   - PDF / DOCX (бинарный формат) — `sha256sum raw/<path>.<ext>` (оригинал, не транскрипт). Транскрипт `.<ext>.md` — производный артефакт, его hash не имеет значения.
 3. Найти запись по ключу `raw/<path>`. Если есть и `hash` совпадает — skip:
    ```
    Источник raw/RLHF.md уже обработан (без изменений с 2026-04-29).
    Используй `/ingest --force` чтобы пересинтезировать.
    ```
-4. Иначе — продолжать.
+4. Иначе — для бинарных форматов: убедиться, что транскрипт `<file>.<ext>.md` существует и свежее оригинала (если нет — вызвать `python3 bin/transcribe.py raw/<path>.<ext>`). Затем продолжать synthesis по транскрипту.
 
 ### Для URL-источника
 
@@ -60,12 +62,15 @@
 ```json
 "raw/<path>": {
   "source_url": "<URL если был>",
-  "hash": "<sha256>",
+  "hash": "<sha256 оригинала>",
+  "transcript": "raw/<path>.<ext>.md",
   "ingested_at": "<ISO timestamp>",
   "pages_created": [<wiki paths>],
   "pages_updated": [<wiki paths>]
 }
 ```
+
+Поле `transcript` — путь к производному markdown-файлу (для PDF/DOCX). Для `.md`-источников и URL — отсутствует.
 
 Записать файл целиком (атомарно).
 

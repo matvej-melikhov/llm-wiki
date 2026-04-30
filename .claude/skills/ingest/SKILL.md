@@ -29,7 +29,9 @@ description: "Загрузка источников в Obsidian wiki-vault. Чи
 
 | Источник | Что читать |
 |---|---|
-| **Файл** (`raw/<path>.md`) | `references/dedup.md` (проверка hash) → Synthesis Workflow |
+| **Markdown файл** (`raw/<path>.md`) | `references/dedup.md` (проверка hash) → Synthesis Workflow |
+| **PDF** (`raw/<path>.pdf`) | секция "Бинарные форматы" ниже → Synthesis Workflow |
+| **DOCX** (`raw/<path>.docx`) | секция "Бинарные форматы" ниже → Synthesis Workflow |
 | **URL** (`https://...`) | `references/url-ingestion.md` (defuddle + URL-дедуп) → Synthesis Workflow |
 | **Изображение** (`.png`/`.jpg`/`.jpeg`/`.gif`/`.webp`/`.svg`/`.avif`) | секция Image ingestion ниже → Synthesis Workflow |
 | **Без источника** (`--fix`) | сразу `references/lint-fix.md` (Fix-only mode) |
@@ -55,6 +57,51 @@ description: "Загрузка источников в Obsidian wiki-vault. Чи
 **Полные детали Phase 8 + Fix-only:** `references/lint-fix.md`.
 
 После Phase 8 — записать запись в `raw/meta/ingested.json` (см. `references/dedup.md`).
+
+---
+
+## Бинарные форматы (PDF, DOCX)
+
+Триггер: пользователь передаёт путь к файлу с расширением `.pdf` или `.docx` (в будущем — также аудио/видео).
+
+**Принцип:** оригинальный файл остаётся как есть в `raw/`, рядом создаётся markdown-транскрипт с расширением `.md` поверх (`article.pdf` → `article.pdf.md`). Синтез работает по транскрипту, во `sources` страницы записываются **оба файла** — оригинал и транскрипт.
+
+### Шаги
+
+1. **Проверить, есть ли уже транскрипт.** Если `<file>.<ext>.md` существует и новее оригинала — использовать как есть, переходить к шагу 3.
+2. **Транскрибировать** через `bin/transcribe.py`:
+   ```bash
+   python3 bin/transcribe.py raw/<path>.<ext>
+   ```
+   Скрипт сам определяет формат по расширению, вызывает соответствующий конвертер (`pymupdf4llm` для PDF, `pandoc` для DOCX), пишет результат в `raw/<path>.<ext>.md` с frontmatter:
+   ```yaml
+   ---
+   source_type: pdf
+   original_file: article.pdf
+   transcribed_at: 2026-04-30T15:45:00
+   ---
+   ```
+3. **Source-level дедуп** через `raw/meta/ingested.json` — по hash **оригинального файла** (не транскрипта). Транскрипт может пересоздаваться, источник истины — оригинал. См. `references/dedup.md`.
+4. **Synthesis Workflow** идёт по транскрипту (Phase 1 читает `<file>.<ext>.md`).
+5. **`sources` во frontmatter wiki-страниц** содержит **оба** wikilink:
+   ```yaml
+   sources:
+     - "[[raw/<path>.<ext>]]"        # оригинал — для верификации
+     - "[[raw/<path>.<ext>.md]]"     # транскрипт — для текстового просмотра
+   ```
+
+### Зависимости
+
+- PDF — `pymupdf4llm` (Python). Устанавливается через `pip3 install --user pymupdf4llm`.
+- DOCX — `pandoc`. Устанавливается через `brew install pandoc` (macOS) или `apt install pandoc` (Linux).
+
+Полная установка через `bin/setup.sh`.
+
+### Что не получается
+
+- Сложные формулы LaTeX в PDF — частично теряются, преобразуются в текст. Если для синтеза критичны точные формулы — проверь транскрипт глазами и поправь руками перед ingest.
+- Картинки внутри PDF — извлекаются как ссылки на embedded images, но их содержимое в транскрипт не попадает. Если в источнике важны диаграммы — нужно их дополнительно ingestить как изображения.
+- DOCX с custom styles — pandoc их теряет. Структура (заголовки, списки, таблицы) сохраняется.
 
 ---
 
