@@ -955,18 +955,75 @@ Wiki-контент пока **не закоммичен** в репозитор
 
 ---
 
-## 15. Связь с референсным проектом
+## 15. Related work и академический контекст
 
-Соседний проект `/Users/melikhov.ma/Documents/diploma-concurrent/claude-obsidian` (Ar9av/claude-obsidian) — внешний референс. Из него заимствованы:
+### 15.1 Источник паттерна
 
-- Pattern source-дедупа через `.raw/.manifest.json` → у нас `raw/meta/ingested.json`
-- 8-фазная структура synthesis workflow в ingest
-- Идея domain-страниц и Bases-запросов в них
+Andrej Karpathy. **LLM Wiki gist** (2026). https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f — формулировка паттерна "compile knowledge once into a persistent wiki, query the wiki instead of re-deriving from raw sources". Наш проект — одна из ~15 практических реализаций.
 
-Не заимствовано (или адаптировано):
-- Tiling (семантический поиск дублей через ollama embeddings) — слишком сложная зависимость для дипломной базы
-- DragonScale Mechanism (адресная схема `c-NNNNNN`) — не нужно для нашего масштаба
-- `wiki-fold` skill — другая концепция управления историей
+### 15.2 Прямые реализации паттерна (репозитории на GitHub)
+
+| Проект | Что отличает |
+|---|---|
+| **AgriciDaniel/claude-obsidian** | 10 скиллов, развитая экосистема. Есть `/autoresearch` (search → fetch → synthesize loop) и `/canvas` (визуальный layer). Заимствован базовый набор скиллов и идея domain-MOC. Hot.md как кэш контекста. |
+| **Ar9av/obsidian-wiki** | Provenance-метки на уровне claim: `^[extracted]`, `^[inferred]`, `^[ambiguous]`. Multi-agent ingest-pipeline (Claude Code, Codex, Hermes, ChatGPT exports, Slack). Заимствована идея sha256-манифеста для source-дедупа. |
+| **SamurAIGPT/llm-wiki-agent** | Multi-CLI совместимость (Claude/Codex/Gemini/OpenCode). Contradiction flags на ingest-времени, не на query-время. Auto-conversion non-markdown через markitdown. |
+| **cablate/llm-atomic-wiki** | Atom layer — атомарные claims с frontmatter как immutable source of truth, wiki-страницы перекомпилируются. Two-layer lint: программный (детерминированный shell) + LLM-layer для семантики. |
+| **skyllwt/OmegaWiki** | Полная research-платформа (24 скилла). 9 типов entity (Papers/Concepts/Topics/People/Ideas/Experiments/Claims/Summaries/Foundations). Typed edges в `graph/edges.jsonl` (`builds_on`, `improves_on`, `challenges`). |
+
+### 15.3 Чем наш проект отличается
+
+| Архитектурное решение | llm-wiki (наш) | Ближайший конкурент |
+|---|---|---|
+| 8-фазный synthesis workflow | да (с явной фазой granularity decision) | у claude-obsidian — плоский ingest, у Ar9av — 4 stage |
+| Source-level dedup (sha256 + manifest) | да | Ar9av — manifest без хешей |
+| Strict frontmatter enum для типов | да (5 типов) | OmegaWiki — 9 типов, без enum |
+| Read-only lint vs writer ingest | да + structured `open_issues` | claude-obsidian — split agents без structured output |
+| Aggregate-hash cache для lint skip-check | да | ни у кого |
+| Auto domain-proposal как MOC | да | ни у кого |
+| URL ingestion через defuddle (verbatim) | да | claude-obsidian — Web Clipper, Samurai — markitdown |
+| Cross-project переиспользование | да (path-reference из CLAUDE.md) | Samurai — multi-CLI в одном репо |
+| Atom layer (immutable claims) | нет | cablate — есть |
+| Provenance-метки на claim | нет | Ar9av — есть |
+| Two-layer lint | частично (LLM-only) | cablate — есть полностью |
+| Typed graph edges | нет (плоские wikilinks) | OmegaWiki — есть |
+
+### 15.4 Соседние Obsidian-плагины
+
+Не реализуют паттерн LLM Wiki, но решают близкие задачи поверх vault:
+
+- **Smart Connections** (brianpetro) — local embeddings + semantic-навигация. Дополняет, не заменяет.
+- **Khoj** (khoj-ai) — self-hostable AI assistant с deep research, локальные LLM.
+- **Copilot** (logancyang) — chat, RAG, semantic search, agentic mode.
+- **Smart Composer** (glowingjade) — Cursor-like editing с MCP.
+- **Text Generator** (nhaouari) — template-driven text generation.
+
+Главное отличие от LLM Wiki: эти плагины делают RAG/embeddings/chat **поверх** vault, не строят compiled wiki. Каждый запрос re-derives ответ из embeddings.
+
+### 15.5 Standalone-сервисы
+
+- **NotebookLM** (Google) — RAG поверх 50 sources/notebook, audio overviews. Source-bound, нет compounding между notebooks.
+- **Mem.ai** — AI-first notes, semantic linking. Закрытый продукт, без markdown-export.
+- **AnythingLLM** (Mintplex) — open-source local desktop, RAG + agents. Workspace = силос, нет markdown как primary artifact.
+- **Reflect.app**, **Saner.ai** — AI-augmented note-taking, разные ниши.
+
+### 15.6 Академический контекст
+
+- **Packer et al. — MemGPT: Towards LLMs as Operating Systems** (arXiv:2310.08560, 2023). Two-tier memory: main context (in-context core) + external context (recall + archival). Параллель: наш `cache.md` ↔ main, wiki ↔ archival. Self-editing memory через tools — теоретическое обоснование агентного управления базой знаний.
+
+- **Microsoft GraphRAG** (https://github.com/microsoft/graphrag, 2024). Двухстадийный extraction (entities + relationships) → community detection → community summaries. Близко к нашему ingest, но автоматический; community summaries — аналог наших domain pages, но без human-in-the-loop confirmation.
+
+- **Bian et al. — LLM-empowered Knowledge Graph Construction: A Survey** (arXiv:2510.20345, October 2025). Делит подходы на schema-based (попадаем сюда — строгий enum типов) и schema-free. Упоминает AutoSchemaKG (real-time schema evolution), Ontogenia (Metacognitive Prompting для self-reflection во время synthesis — теоретическое обоснование нашей Phase 8 lint review), ATLAS (900M nodes из 50M docs).
+
+### 15.7 Идеи к заимствованию (отложены)
+
+Из обзора выделены пять идей, которые стоит рассмотреть для расширения проекта:
+
+1. **Atom layer** (от cablate) — immutable single-claim файлы под `atoms/`, wiki-страницы перекомпилируются.
+2. **Two-layer lint** (от cablate) — детерминированный shell + LLM-layer. Совпадает с планируемой "программной реализацией lint".
+3. **Provenance-метки** (от Ar9av) — `^[extracted]`/`^[inferred]`/`^[ambiguous]` рядом с claim'ами.
+4. **Typed graph edges** (от OmegaWiki) — `graph/edges.jsonl` с relation-типами параллельно wikilinks.
+5. **Contradiction flags на ingest** (от SamurAIGPT) — при синтезе явное сравнение с существующими claims, создание `wiki/contradictions/<topic>.md`.
 
 ---
 
