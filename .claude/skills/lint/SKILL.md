@@ -118,6 +118,7 @@ Lint **только читает** wiki и записывает структур
 | `contradiction` | противоречие между утверждениями двух страниц | `{type, page_a, page_b, claim}` |
 | `outdated-claim` | утверждение в `[[A]]` потенциально опровергнуто `[[B]]` | `{type, where, claim, conflicts_with}` |
 | `missing-index-entry` | content-страница (idea/entity/question/domain) существует в файлах, но строка о ней отсутствует в `wiki/index.md` | `{type, where, page_type}` |
+| `dangling-domain-ref` | страница имеет в `domain:` frontmatter ссылку на несуществующую domain-страницу | `{type, where, missing_domain}` |
 
 ### Skip (только записываем, не спрашиваем)
 
@@ -150,6 +151,7 @@ Lint **только читает** wiki и записывает структур
 | 13.1 | Папка vs `type:` во frontmatter | auto-fix |
 | 13.2 | Битые строки в `index.md` (ссылка на удалённую страницу) | auto-fix |
 | 13.3 | Страница есть, строки в `index.md` нет | ask |
+| 13.4 | `domain:` ссылается на несуществующую domain-страницу | ask |
 | 14 | Пустые секции | skip |
 | 15 | Стилистические нарушения | skip |
 
