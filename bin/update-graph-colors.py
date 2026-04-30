@@ -226,9 +226,38 @@ def hue_to_rgb_int(hue: float, saturation: float = SATURATION, value: float = VA
     return (int(r * 255) << 16) | (int(g * 255) << 8) | int(b * 255)
 
 
+def count_domain_pages(name: str) -> int:
+    """Count pages whose `domain` frontmatter contains this domain name.
+    Used to order color groups from leaf (specific) to root (general)."""
+    count = 0
+    for folder in ("ideas", "entities", "questions"):
+        d = Path("wiki") / folder
+        if not d.is_dir():
+            continue
+        needle = f'"[[{name}]]"'
+        for f in d.glob("*.md"):
+            try:
+                text = f.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            # Crude but effective: look for the wikilink in frontmatter region
+            if "---" in text:
+                fm_end = text.find("\n---", 3)
+                if fm_end > 0 and needle in text[:fm_end]:
+                    count += 1
+    return count
+
+
 def build_color_groups(hues: dict[str, float]) -> list[dict]:
+    """Order: leaf domains first (smaller page count), root domains last.
+    Obsidian matches the first colorGroup whose query matches a page, so
+    putting more-specific domains first means a page in both ML and RL
+    gets the RL color (more specific) instead of the ML color (parent)."""
+    domain_counts = [(name, count_domain_pages(name)) for name in hues]
+    domain_counts.sort(key=lambda x: (x[1], x[0]))  # asc by count, then by name
+
     groups = []
-    for name in sorted(hues):  # stable order
+    for name, _count in domain_counts:
         rgb = hue_to_rgb_int(hues[name])
         groups.append({
             "query": f'["domain":"{name}"]',
