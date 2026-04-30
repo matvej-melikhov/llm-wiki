@@ -378,9 +378,14 @@ Pattern взят из референсного проекта `claude-obsidian` 
 
 **Auto-fix** (детерминистические нарушения схемы — единственный очевидный fix):
 - `status-not-in-enum`, `status-on-entity`, `legacy-field`, `lowercase-tags`, `inline-tags`, `raw-link-with-extension`, `raw-ref-in-body`, `empty-sources-section`
+- `folder-type-mismatch` — папка vs `type:` во frontmatter рассогласованы (фикс по папке)
+- `stale-index-entry` — строка в `index.md` ведёт на удалённую страницу (фикс — удалить строку)
 
 **Ask user** (требует суждения):
 - `dead-link`, `orphan`, `missing-concept` (≥3 упоминания), `contradiction`, `outdated-claim`
+- `missing-index-entry` — страница есть, в index нет (фикс — сгенерировать саммари и добавить строку)
+- `dangling-domain-ref` — `domain:` указывает на несуществующую domain-страницу (создать или убрать)
+- `asymmetric-related` — A→B без B→A (симметризовать или удалить одностороннюю)
 
 **Skip** (информационные флаги, не спрашиваем):
 - `empty-section`, `style-nit`
