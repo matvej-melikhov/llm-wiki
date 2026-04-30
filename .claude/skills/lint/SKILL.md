@@ -101,8 +101,9 @@ Lint **только читает** wiki и записывает структур
 | `lowercase-tags` | теги в lowercase или со смешанным регистром аббревиатур | `{type, where, tags: [...]}` |
 | `inline-tags` | `tags: [a, b]` инлайн вместо блочного YAML | `{type, where}` |
 | `raw-link-with-extension` | `[[raw/X.md]]` вместо `[[raw/X]]` | `{type, where, link}` |
-| `raw-ref-in-body` | упоминание `[[raw/...]]` в теле страницы | `{type, where, link, line}` |
+| `raw-ref-no-alias` | `[[raw/...]]` в теле без alias `↗` (на single-source странице такого вообще не должно быть) | `{type, where, link, line}` |
 | `empty-sources-section` | секция `## Источники`/`## Источники упоминания` содержит только `[[raw/...]]` | `{type, where, section}` |
+| `raw-ref-on-single-source-page` | inline `[[raw/...]]` на странице где `len(sources) == 1` (избыточно) | `{type, where, link, line}` |
 
 ### Ask user (ingest спрашивает решение)
 
@@ -115,6 +116,7 @@ Lint **только читает** wiki и записывает структур
 | `missing-concept` | концепция упомянута в ≥3 страницах без своей wiki-страницы | `{type, term, mentioned_in: [...]}` |
 | `contradiction` | противоречие между утверждениями двух страниц | `{type, page_a, page_b, claim}` |
 | `outdated-claim` | утверждение в `[[A]]` потенциально опровергнуто `[[B]]` | `{type, where, claim, conflicts_with}` |
+| `multi-source-no-citations` | страница с `len(sources) ≥ 2` без inline-маркеров `[[raw/...|↗]]` в теле | `{type, where, sources_count}` |
 
 ### Skip (только записываем, не спрашиваем)
 
@@ -142,11 +144,12 @@ Lint **только читает** wiki и записывает структур
 | 9 | Tags casing (lowercase аббревиатур) | auto-fix |
 | 10 | Tags inline-формат | auto-fix |
 | 11 | `[[raw/X.md]]` (с расширением) в `sources` | auto-fix |
-| 12 | Raw-refs в теле страницы | auto-fix |
+| 12 | Raw-refs в теле без alias / на single-source странице | auto-fix |
 | 13 | "Sources"-секция с одним raw | auto-fix |
-| 14 | Пустые секции | skip |
-| 15 | Стилистические нарушения | skip |
-| 16 | Устаревшие записи в `index.md` (ведут на удалённые страницы) | ask |
+| 14 | Multi-source страница без inline-маркеров `↗` | ask |
+| 15 | Пустые секции | skip |
+| 16 | Стилистические нарушения | skip |
+| 17 | Устаревшие записи в `index.md` (ведут на удалённые страницы) | ask |
 
 ---
 
