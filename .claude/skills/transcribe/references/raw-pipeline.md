@@ -127,25 +127,14 @@ pages: 26
 
 ---
 
-## Обновление manifesta
+## Дедуп при повторном вызове
 
-В `raw/meta/ingested.json` добавляется запись с **двумя хешами**:
+Transcribe не пишет в `raw/meta/ingested.json` — это зона ingest.
 
-```json
-"raw/formats/paper.pdf": {
-  "original_hash": "<sha256 бинарного файла>",
-  "restored_to": "raw/paper.md",
-  "restored_hash": "<sha256 восстановленного .md>",
-  "source_type": "pdf",
-  "pages": 26,
-  "restored": true,
-  "transcribed_at": "2026-05-01T..."
-}
-```
-
-При повторном вызове:
-- hash оригинала совпадает → skip (файл не изменился)
-- hash изменился → перепрогнать pipeline
+Проверка при повторном `/transcribe`:
+- Существует `raw/<stem>.md` И он **новее** оригинала (`raw/formats/<file>`) → skip
+- Оригинал обновился или `.md` не существует → запустить pipeline
+- `--force` → игнорировать проверку
 
 ---
 
