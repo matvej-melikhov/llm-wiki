@@ -117,6 +117,7 @@ Lint **только читает** wiki и записывает структур
 | `missing-concept` | концепция упомянута в ≥3 страницах без своей wiki-страницы | `{type, term, mentioned_in: [...]}` |
 | `contradiction` | противоречие между утверждениями двух страниц | `{type, page_a, page_b, claim}` |
 | `outdated-claim` | утверждение в `[[A]]` потенциально опровергнуто `[[B]]` | `{type, where, claim, conflicts_with}` |
+| `missing-index-entry` | content-страница (idea/entity/question/domain) существует в файлах, но строка о ней отсутствует в `wiki/index.md` | `{type, where, page_type}` |
 
 ### Skip (только записываем, не спрашиваем)
 
@@ -148,6 +149,7 @@ Lint **только читает** wiki и записывает структур
 | 13 | "Sources"-секция с одним raw | auto-fix |
 | 13.1 | Папка vs `type:` во frontmatter | auto-fix |
 | 13.2 | Битые строки в `index.md` (ссылка на удалённую страницу) | auto-fix |
+| 13.3 | Страница есть, строки в `index.md` нет | ask |
 | 14 | Пустые секции | skip |
 | 15 | Стилистические нарушения | skip |
 
