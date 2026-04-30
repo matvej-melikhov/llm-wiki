@@ -695,6 +695,167 @@ def check_asymmetric_related(pages: list[Page]) -> Iterable[Issue]:
             })
 
 
+# ────────────────────────────────────────────────────────────────────────
+# Index analysis
+# ────────────────────────────────────────────────────────────────────────
+
+
+# Map index-section heading → folder containing those pages.
+_INDEX_SECTION_TO_FOLDER = {
+    "Ideas": "ideas",
+    "Entities": "entities",
+    "Questions": "questions",
+    "Domains": "domains",
+}
+
+
+def _parse_index_tables(index_text: str) -> dict[str, set[str]]:
+    """Parse wiki/index.md into {section_name: set of wikilink targets}.
+
+    Sections are detected by `## <SectionName>` headings matching keys in
+    _INDEX_SECTION_TO_FOLDER. Within each section we look for table rows
+    where the first cell contains a wikilink.
+    """
+    result: dict[str, set[str]] = {}
+    current_section: str | None = None
+
+    for line in index_text.split("\n"):
+        # Heading
+        h = re.match(r"^##\s+(.+?)\s*$", line)
+        if h:
+            heading = h.group(1).strip()
+            if heading in _INDEX_SECTION_TO_FOLDER:
+                current_section = heading
+                result.setdefault(current_section, set())
+            else:
+                current_section = None
+            continue
+        if current_section is None:
+            continue
+        # Table row: starts with `|`
+        if not line.lstrip().startswith("|"):
+            continue
+        # Skip separator row: `|---|---|`
+        if re.match(r"^\s*\|[\s\-:|]+\|\s*$", line):
+            continue
+        # Extract first cell content
+        cells = [c.strip() for c in line.split("|") if c.strip()]
+        if not cells:
+            continue
+        first_cell = cells[0]
+        for m in _WIKILINK_RE.finditer(first_cell):
+            result[current_section].add(m.group(1).strip())
+    return result
+
+
+def check_stale_index_entry(pages: list[Page]) -> Iterable[Issue]:
+    """Row in wiki/index.md table whose wikilink resolves to no existing page."""
+    index_path = WIKI_ROOT / "index.md"
+    if not index_path.is_file():
+        return
+    fm, body = parse_frontmatter(index_path.read_text(encoding="utf-8"))
+    by_name = {p.name: p for p in pages}
+
+    sections = _parse_index_tables(body)
+    for section, targets in sections.items():
+        for target in sorted(targets):
+            if target.startswith("raw/"):
+                continue
+            if target not in by_name:
+                yield Issue("stale-index-entry", {
+                    "link": f"[[{target}]]",
+                    "section": section,
+                })
+
+
+def check_missing_index_entry(pages: list[Page]) -> Iterable[Issue]:
+    """Content page exists but no row in wiki/index.md table."""
+    index_path = WIKI_ROOT / "index.md"
+    if not index_path.is_file():
+        return
+    _, body = parse_frontmatter(index_path.read_text(encoding="utf-8"))
+    sections = _parse_index_tables(body)
+
+    # Flatten: set of all names referenced in any section
+    indexed_names: set[str] = set()
+    for targets in sections.values():
+        indexed_names.update(targets)
+
+    for p in pages:
+        if p.folder not in CONTENT_FOLDERS:
+            continue
+        if p.name in indexed_names:
+            continue
+        # Page exists but missing from index
+        page_type = p.page_type or FOLDER_TO_TYPE.get(p.folder, "")
+        yield Issue("missing-index-entry", {
+            "where": p.relpath(),
+            "page_type": page_type,
+        })
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Body-structure checks
+# ────────────────────────────────────────────────────────────────────────
+
+
+def check_empty_section(pages: list[Page]) -> Iterable[Issue]:
+    """Heading (## or higher) followed by no non-empty content before the
+    next heading or end of file. Skip-category — informational only, since
+    empty sections may be intentional placeholders."""
+    for p in pages:
+        if p.fm is None or not p.body:
+            continue
+        # Skip meta pages (their structure is operation-driven, not content)
+        if p.page_type == "meta" or p.folder == "meta":
+            continue
+
+        lines = p.body.split("\n")
+        in_code = False
+        # Walk: when we find a heading, look ahead for content until next heading
+        for i, raw_line in enumerate(lines):
+            stripped = raw_line.lstrip()
+            if stripped.startswith("```"):
+                in_code = not in_code
+                continue
+            if in_code:
+                continue
+            h = re.match(r"^(#{2,})\s+(.+?)\s*$", raw_line)
+            if not h:
+                continue
+            heading_level = len(h.group(1))
+            heading_text = h.group(2).strip()
+            # Look ahead for content
+            has_content = False
+            j = i + 1
+            in_code_inner = False
+            while j < len(lines):
+                next_line = lines[j]
+                ns = next_line.lstrip()
+                if ns.startswith("```"):
+                    in_code_inner = not in_code_inner
+                    j += 1
+                    continue
+                # Next heading at same or higher level → section ended
+                next_h = re.match(r"^(#{1,})\s+", next_line)
+                if next_h and not in_code_inner:
+                    next_level = len(next_h.group(1))
+                    if next_level <= heading_level:
+                        break
+                if next_line.strip():
+                    # Non-empty line. Skip HTML comments — they're
+                    # placeholders, not content.
+                    if not next_line.strip().startswith("<!--"):
+                        has_content = True
+                        break
+                j += 1
+            if not has_content:
+                yield Issue("empty-section", {
+                    "where": p.relpath(),
+                    "section": heading_text,
+                })
+
+
 def check_dangling_domain_ref(pages: list[Page]) -> Iterable[Issue]:
     """domain: ["[[X]]"] points to a non-existent wiki/domains/X.md."""
     domain_pages = {p.name for p in pages if p.folder == "domains"}
@@ -749,6 +910,9 @@ _CHECKS: list[tuple[str, Any]] = [
     ("orphan", check_orphan),
     ("asymmetric-related", check_asymmetric_related),
     ("dangling-domain-ref", check_dangling_domain_ref),
+    ("stale-index-entry", check_stale_index_entry),
+    ("missing-index-entry", check_missing_index_entry),
+    ("empty-section", check_empty_section),
 ]
 
 
