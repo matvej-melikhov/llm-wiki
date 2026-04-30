@@ -79,7 +79,10 @@ llm-wiki/
 │   ├── themes/                    ← Claudian, Meridian, Minimal
 │   └── plugins/                   ← brat, claudian, terminal
 │
-└── bin/                           ← (зарезервировано под скрипты)
+└── bin/                           ← скрипты обслуживания
+    ├── update-graph-colors.py     ← раскраска графа по domain (embedding/hash)
+    └── lib/
+        └── embeddings.py          ← общий слой embeddings (ollama + кеш)
 ```
 
 Уровневая модель из CLAUDE.md:
@@ -723,6 +726,21 @@ Core: bases (включён), canvas, daily-notes, audio-recorder, sync.
 ```
 
 Это исключает из графа: meta-страницы (по `type` во frontmatter), сырые источники, шаблоны, инфраструктуру. На графе видны только content-страницы (idea/entity/question/domain) и связи между ними.
+
+### Раскраска графа по domain
+
+`colorGroups` в `graph.json` назначает каждому домену свой цвет — страницы с `domain: ["[[X]]"]` во frontmatter выделяются на графе цветом домена. Это даёт визуальную кластеризацию областей.
+
+Цвета генерируются автоматически скриптом `bin/update-graph-colors.py`:
+
+- **Embedding-режим** (по умолчанию, если ollama доступна): для каждого домена считается embedding (имя + первый абзац описания), затем через зафиксированный PCA-базис проецируется на ось → hue. Близкие по смыслу домены получают близкие цвета.
+- **Hash-режим** (fallback): `hue = sha256(name) % 360`. Стабильно, без зависимостей, но без семантики.
+
+Базис PCA фиксируется при первой генерации и хранится в `wiki/meta/graph-colors-basis.json`. Новые домены проецируются на существующие оси — цвета уже добавленных доменов **не меняются**.
+
+Embeddings кешируются в `wiki/meta/embeddings.json` для переиспользования (общий слой `bin/lib/embeddings.py` для будущих фич: semantic search, tiling, related-suggestion).
+
+Скрипт вызывается автоматически в Phase 7 ingest при создании нового домена. Можно запустить и вручную: `python3 bin/update-graph-colors.py [--hash] [--dry-run]`. **Важно:** Obsidian должен быть закрыт во время записи — иначе перезапишет `graph.json` своим состоянием.
 
 ### Dashboard.base
 
