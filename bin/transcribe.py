@@ -166,16 +166,12 @@ def extract_pdf_images(path: Path) -> list[str]:
                 except Exception as e:
                     print(f"  warning: skipping p{page_no}:{img_idx} — {e}", file=sys.stderr)
         else:
-            # Strategy B: vector graphics or tiny rasters → render whole page
-            try:
-                pix = page.get_pixmap(matrix=mat)
-                filename = f"{stem}-page{page_no}.png"
-                out_path = IMAGE_DIR / filename
-                pix.save(str(out_path))
-                saved.append(str(out_path))
-                print(f"  [page]   saved: {out_path} ({pix.width}x{pix.height}px)", file=sys.stderr)
-            except Exception as e:
-                print(f"  warning: could not render page {page_no} — {e}", file=sys.stderr)
+            # Vector graphics: cannot extract as standalone image file.
+            # Agent will write a text description based on Read-tool content.
+            print(
+                f"  [vector] page {page_no}: vector diagram(s) — skipped, agent will describe",
+                file=sys.stderr,
+            )
 
     doc.close()
     return saved
