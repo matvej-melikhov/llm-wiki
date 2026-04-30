@@ -29,9 +29,11 @@ llm-wiki/
 ├── .gitignore
 │
 ├── raw/                           ← Уровень 1: иммутабельные источники
+│   ├── formats/                   ← бинарные оригиналы (PDF, DOCX, audio)
 │   ├── meta/
-│   │   └── ingested.json          ← манифест обработанных источников (sha256)
-│   └── RLHF.md                    ← пример источника
+│   │   └── ingested.json          ← манифест (sha256 оригинала + транскрипта)
+│   ├── RLHF.md                    ← пример источника в markdown
+│   └── paper.md                   ← пример транскрипта (после /transcribe)
 │
 ├── wiki/                          ← Уровень 2: LLM-генерируемая база знаний
 │   ├── index.md                   ← мастер-каталог (таблицы со саммари)
@@ -64,7 +66,8 @@ llm-wiki/
 │       ├── wiki/                  ← маршрутизатор + frontmatter-схема
 │       ├── ingest/                ← синтез источников (8-фазный workflow)
 │       ├── query/                 ← запросы к wiki (3 режима)
-│       ├── lint/                  ← read-only ревьюер
+│       ├── lint/                  ← read-only ревьюер (two-layer)
+│       ├── transcribe/            ← конвертация PDF/DOCX в markdown (two-step)
 │       ├── save/                  ← файлирование разговоров
 │       ├── defuddle/              ← очистка URL → дословный markdown
 │       ├── obsidian-markdown/     ← reference: Obsidian Flavored Markdown
@@ -80,7 +83,10 @@ llm-wiki/
 │   └── plugins/                   ← brat, claudian, terminal
 │
 └── bin/                           ← скрипты обслуживания
-    ├── lint.py                    ← Layer 1 lint: 13 детерминистических проверок на чистом Python
+    ├── lint.py                    ← Layer 1 lint: 14 детерминистических проверок
+    ├── transcribe.py              ← Step 1 pipeline: PDF/DOCX → raw markdown (pymupdf4llm/pandoc)
+    ├── requirements.txt           ← Python-зависимости (pymupdf4llm)
+    ├── setup.sh                   ← установка всех зависимостей
     └── setup-vault.sh             ← (legacy)
 ```
 
@@ -437,7 +443,46 @@ Workflow:
 9. Дописать в log.md
 10. Обновить cache.md
 
-### 5.6 defuddle — очистка URL для ingestion
+### 5.6 transcribe — конвертация PDF/DOCX в markdown
+
+**Структура:**
+```
+.claude/skills/transcribe/
+├── SKILL.md                       ← router: триггеры, флаги, правила агента
+└── references/
+    ├── raw-pipeline.md            ← Step 1/2, форматы, изображения, именование
+    └── wiki-integration.md        ← frontmatter, sources, dedup, ingest-routing
+```
+
+**Two-step pipeline:**
+
+1. **Step 1 — механическая конвертация** (`bin/transcribe.py`): запускается через Bash без LLM. `pymupdf4llm` (PDF) или `pandoc` (DOCX) извлекают текст + изображения. Изображения падают в `_attachments/`, сырой markdown выводится в stdout с мета-блоком `<!-- transcribe-meta -->`. Для PDF > 100 страниц Step 2 пропускается.
+
+2. **Step 2 — агентское восстановление**: агент читает сырой вывод в память (без промежуточного файла), восстанавливает структуру оригинала — правит артефакты конвертации, переводит пути к изображениям `_attachments/img.png` → `![[img.png]]`. **Ничего не придумывает** — только восстановление.
+
+**Файловая структура:**
+```
+raw/formats/paper.pdf     ← оригинал (иммутабельный)
+raw/paper.md              ← восстановленный markdown
+_attachments/img.png      ← изображения из документа
+```
+
+**Frontmatter транскрипта:**
+```yaml
+source_type: pdf
+original_file: raw/formats/paper.pdf
+restored: true
+restored_at: 2026-05-01T...
+pages: 26
+```
+
+**В `sources:` wiki-страниц** — только `[[raw/paper.md]]`. Оригинальный бинарник не вставляется — он не рендерится в Obsidian.
+
+**Манифест** хранит два hash: `original_hash` (бинарник) и `restored_hash` (md). Dedup по обоим.
+
+Вызывается самостоятельно (`/transcribe raw/formats/paper.pdf`) или автоматически из `ingest` при обнаружении `.pdf`/`.docx`.
+
+### 5.7 defuddle — очистка URL для ingestion
 
 **Файл:** `.claude/skills/defuddle/SKILL.md`
 
