@@ -303,14 +303,176 @@ class Issue:
 
 
 # ────────────────────────────────────────────────────────────────────────
-# Checks (added in subsequent commits)
+# Checks
 # ────────────────────────────────────────────────────────────────────────
+#
+# Each check function takes a list[Page] (and optionally pre-built indexes)
+# and yields Issue objects. Checks are pure — no I/O.
+# ────────────────────────────────────────────────────────────────────────
+
+
+def check_status_not_in_enum(pages: list[Page]) -> Iterable[Issue]:
+    """status: must be one of evaluation/in-progress/ready (when present and
+    not on entity)."""
+    for p in pages:
+        if p.fm is None:
+            continue
+        status = p.fm.fields.get("status")
+        if status is None:
+            continue
+        # entity has its own check that says status shouldn't even be there
+        if p.page_type == "entity":
+            continue
+        if status not in VALID_STATUSES:
+            yield Issue("status-not-in-enum", {
+                "where": p.relpath(),
+                "value": status,
+                "fix": "in-progress",
+            })
+
+
+def check_status_on_entity(pages: list[Page]) -> Iterable[Issue]:
+    """type: entity pages must not have a status field."""
+    for p in pages:
+        if p.fm is None:
+            continue
+        if p.page_type != "entity":
+            continue
+        if "status" in p.fm.fields:
+            yield Issue("status-on-entity", {"where": p.relpath()})
+
+
+def check_legacy_field(pages: list[Page]) -> Iterable[Issue]:
+    """Old-schema fields (title/complexity/first_mentioned) on non-meta pages."""
+    for p in pages:
+        if p.fm is None:
+            continue
+        if p.page_type == "meta":
+            continue
+        for field_name in LEGACY_FIELDS:
+            if field_name in p.fm.fields:
+                yield Issue("legacy-field", {
+                    "where": p.relpath(),
+                    "field": field_name,
+                })
+
+
+def _expected_tag_casing(tag: str) -> str | None:
+    """Return the canonically-cased version of `tag`, or None if it already
+    matches schema rules.
+
+    Schema (from references/frontmatter.md):
+    - abbreviations uppercase: ML, RL, NLP, RLHF, ...
+    - regular words capitalized: Alignment, Optimization, ...
+    - no lowercase abbreviations, no mixed-case abbreviations
+
+    Heuristic (without hardcoding every possible abbreviation):
+    - tag is all-uppercase → already canonical abbreviation, accept
+    - tag in KNOWN_ABBREVIATIONS list (case-insensitive) → fix to canonical form
+      (handles LoRA, GPT-3, etc. with non-trivial casing)
+    - tag starts with uppercase letter (rest mixed/lower) → accept
+      (Capitalized "Alignment", or mixed like "KMeans", "MapReduce")
+    - tag starts with lowercase → fix: capitalize first letter, lowercase rest
+
+    This is permissive: any tag that *could* be a valid abbreviation or
+    capitalized word passes. It only flags clear violations like 'ml' or
+    'optimization'.
+    """
+    if not tag:
+        return None
+
+    # All-uppercase: canonical abbreviation form
+    if tag.isupper():
+        return None
+
+    # Known abbreviation with non-trivial casing (LoRA → keep as LoRA)
+    upper = tag.upper()
+    for a in KNOWN_ABBREVIATIONS:
+        if a.upper() == upper:
+            return None if tag == a else a
+
+    # Starts with uppercase letter: accept (Capitalized regular word, or
+    # mixed-case like KMeans we can't validate further without a dictionary)
+    if tag[0].isupper():
+        return None
+
+    # Starts with lowercase: violation. Suggest Capitalized form as fix.
+    expected = tag[0].upper() + tag[1:].lower()
+    return expected
+
+
+def check_lowercase_tags(pages: list[Page]) -> Iterable[Issue]:
+    """Tags must follow casing schema: abbreviations uppercase
+    (ML/RL/NLP), regular words Capitalized."""
+    for p in pages:
+        if p.fm is None:
+            continue
+        tags = p.fm.fields.get("tags")
+        if not tags or not isinstance(tags, list):
+            continue
+        bad: list[str] = []
+        for t in tags:
+            if not isinstance(t, str):
+                continue
+            if _expected_tag_casing(t) is not None:
+                bad.append(t)
+        if bad:
+            yield Issue("lowercase-tags", {
+                "where": p.relpath(),
+                "tags": bad,
+            })
+
+
+def check_inline_tags(pages: list[Page]) -> Iterable[Issue]:
+    """tags: [a, b] inline format instead of block-style YAML.
+
+    Empty inline lists (tags: []) are accepted — that's a normal placeholder
+    in templates. We only flag inline lists with at least one element."""
+    for p in pages:
+        if p.fm is None:
+            continue
+        if "tags" not in p.fm.inline_lists:
+            continue
+        tags = p.fm.fields.get("tags")
+        if isinstance(tags, list) and len(tags) > 0:
+            yield Issue("inline-tags", {"where": p.relpath()})
+
+
+def check_folder_type_mismatch(pages: list[Page]) -> Iterable[Issue]:
+    """Page in wiki/<X>/ must have type: matching the folder."""
+    for p in pages:
+        if p.fm is None:
+            continue
+        expected = FOLDER_TO_TYPE.get(p.folder)
+        if expected is None:
+            continue  # not in a content folder (e.g. meta or wiki root)
+        current = p.page_type
+        if current != expected:
+            yield Issue("folder-type-mismatch", {
+                "where": p.relpath(),
+                "current_type": current,
+                "expected_type": expected,
+            })
+
+
+# Registry: ordered list of (issue_type_string, check_function)
+_CHECKS: list[tuple[str, Any]] = [
+    ("status-not-in-enum", check_status_not_in_enum),
+    ("status-on-entity", check_status_on_entity),
+    ("legacy-field", check_legacy_field),
+    ("lowercase-tags", check_lowercase_tags),
+    ("inline-tags", check_inline_tags),
+    ("folder-type-mismatch", check_folder_type_mismatch),
+]
 
 
 def run_all_checks(pages: list[Page], filter_type: str | None = None) -> list[Issue]:
     """Run every registered check. If filter_type is set, run only that one."""
     issues: list[Issue] = []
-    # Will be populated as checks are added.
+    for type_name, check_fn in _CHECKS:
+        if filter_type and type_name != filter_type:
+            continue
+        issues.extend(check_fn(pages))
     return issues
 
 
