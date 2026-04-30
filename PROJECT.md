@@ -79,7 +79,9 @@ llm-wiki/
 │   ├── themes/                    ← Claudian, Meridian, Minimal
 │   └── plugins/                   ← brat, claudian, terminal
 │
-└── bin/                           ← (зарезервировано под скрипты)
+└── bin/                           ← скрипты обслуживания
+    ├── lint.py                    ← Layer 1 lint: 13 детерминистических проверок на чистом Python
+    └── setup-vault.sh             ← (legacy)
 ```
 
 Уровневая модель из CLAUDE.md:
@@ -339,9 +341,23 @@ Pattern взят из референсного проекта `claude-obsidian` 
 
 Хорошие ответы предлагается сохранить как `wiki/questions/<title>.md`. Frontmatter включает `question:`, `answer_quality`, `related`, `sources`.
 
-### 5.4 lint — read-only ревьюер
+### 5.4 lint — read-only ревьюер (two-layer)
 
-**Файл:** `.claude/skills/lint/SKILL.md` (174 строки)
+**Файлы:**
+- `bin/lint.py` (~700 строк Python) — Layer 1: программные проверки
+- `.claude/skills/lint/SKILL.md` — Layer 2: LLM-семантические проверки
+
+**Архитектура two-layer.** 13 из 16 проверок детерминированы и реализованы как чистый Python в `bin/lint.py` без LLM-стоимости — статус enum, поля схемы, регистр тегов, сирот, мёртвых ссылок, dangling-domain-ref, asymmetric-related, structure index. Запускается за секунды.
+
+3 проверки требуют семантического суждения и остаются за LLM (Layer 2 — этот скилл): `contradiction`, `outdated-claim`, `missing-concept`, плюс `style-nit` (skip-категория).
+
+Полный поток `/lint`:
+```
+1. python3 bin/lint.py        # Layer 1: пишет lint-state.json
+2. lint skill (LLM)            # Layer 2: дополняет open_issues
+```
+
+`/lint --fast` пропускает Layer 2 — чисто программно, мгновенно.
 
 **Только читает.** Записывает результат в `wiki/meta/lint-state.json`. Никогда не модифицирует content-файлы.
 
