@@ -438,6 +438,286 @@ def check_inline_tags(pages: list[Page]) -> Iterable[Issue]:
             yield Issue("inline-tags", {"where": p.relpath()})
 
 
+def check_raw_link_with_extension(pages: list[Page]) -> Iterable[Issue]:
+    """[[raw/X.md]] in `sources:` should be [[raw/X]] (no extension).
+
+    Compound-extension transcripts like [[raw/X.docx.md]] are NOT flagged:
+    the .md is necessary because [[raw/X.docx]] would resolve to the
+    original DOCX (not the markdown transcript). We only flag .md when
+    the basename has no other dots before the .md.
+    """
+    for p in pages:
+        if p.fm is None:
+            continue
+        sources = p.fm.fields.get("sources")
+        if not sources or not isinstance(sources, list):
+            continue
+        for src in sources:
+            if not isinstance(src, str):
+                continue
+            m = re.fullmatch(r"\[\[(raw/[^\]|]+)\.md(\|[^\]]+)?\]\]", src)
+            if not m:
+                continue
+            inner = m.group(1)  # everything between [[raw/ and .md
+            # If the basename (last segment) contains a dot, we're dealing
+            # with a compound extension like X.docx.md — keep the .md.
+            basename = inner.rsplit("/", 1)[-1]
+            if "." in basename:
+                continue
+            yield Issue("raw-link-with-extension", {
+                "where": p.relpath(),
+                "link": src,
+            })
+
+
+_BODY_RAW_REF_RE = re.compile(r"\[\[raw/[^\]]+\]\]")
+
+
+def check_raw_ref_in_body(pages: list[Page]) -> Iterable[Issue]:
+    """[[raw/...]] mentioned in page body (not just frontmatter).
+
+    Skips meta pages (log.md, cache.md, summary.md, lint-report-*) — they
+    legitimately mention raw paths as documentation of operations.
+    """
+    for p in pages:
+        if p.fm is None or not p.body:
+            continue
+        if p.page_type == "meta":
+            continue
+        if p.folder == "meta":
+            continue
+        for line_no, line in enumerate(p.body.split("\n"), start=1):
+            for m in _BODY_RAW_REF_RE.finditer(line):
+                link = m.group(0)
+                yield Issue("raw-ref-in-body", {
+                    "where": p.relpath(),
+                    "link": link,
+                    "line": line_no,
+                })
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Wikilink graph
+# ────────────────────────────────────────────────────────────────────────
+
+# Match wikilinks: [[Target]] or [[Target|Alias]] or [[Target#section]] or
+# [[Target#section|alias]]. Excluded: image/file embeds (![[...]]) — these are
+# Obsidian's transclusion syntax, not navigation.
+#
+# The basename match `[^\]|#]+` stops at a real `|` (alias separator) or `]`
+# or `#` (section anchor). Inside markdown tables `|` may be escaped as `\|`
+# — _normalize_wikilink_text replaces those before matching so the basename
+# isn't truncated at the escape.
+_WIKILINK_RE = re.compile(r"(?<!\!)\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]")
+
+
+def _normalize_wikilink_text(text: str) -> str:
+    """Pre-process for wikilink extraction:
+    - replace `\\|` (escaped pipe in markdown tables) with `|`
+    - strip fenced code blocks ```...```
+    - strip inline code `...`
+    """
+    cleaned = text.replace(r"\|", "|")
+    cleaned = re.sub(r"```.*?```", "", cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r"`[^`\n]*`", "", cleaned)
+    return cleaned
+
+
+def _extract_wikilinks(text: str) -> list[str]:
+    """Return target names of all wikilinks in text."""
+    cleaned = _normalize_wikilink_text(text)
+    return [m.group(1).strip() for m in _WIKILINK_RE.finditer(cleaned)]
+
+
+def _build_link_graph(pages: list[Page]) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """Return (outbound, inbound) maps keyed by page name (basename without
+    extension). Body wikilinks only — not frontmatter `related`/`domain`/etc.
+    Wait: actually `related` field IS part of inbound counting (otherwise
+    pages with only frontmatter links look like orphans). Same for `domain`.
+    But `sources` (raw refs) shouldn't count.
+    """
+    # Build a name → page map
+    by_name: dict[str, Page] = {p.name: p for p in pages}
+
+    outbound: dict[str, set[str]] = {p.name: set() for p in pages}
+    inbound: dict[str, set[str]] = {p.name: set() for p in pages}
+
+    for p in pages:
+        # Body links
+        body_links = _extract_wikilinks(p.body)
+        # Frontmatter wikilinks from related, domain, sources
+        fm_links: list[str] = []
+        if p.fm is not None:
+            for fld in ("related", "domain"):
+                values = p.fm.fields.get(fld)
+                if isinstance(values, list):
+                    for v in values:
+                        if isinstance(v, str):
+                            fm_links.extend(_extract_wikilinks(v))
+
+        for target in body_links + fm_links:
+            # Skip raw-refs — they're not wiki page links
+            if target.startswith("raw/") or target.startswith("raw\\"):
+                continue
+            outbound[p.name].add(target)
+            if target in by_name:
+                inbound[target].add(p.name)
+
+    return outbound, inbound
+
+
+def check_dead_link(pages: list[Page]) -> Iterable[Issue]:
+    """Wikilink to a non-existent page (in body, related, or domain field).
+
+    Skips:
+    - links inside fenced code blocks (```)
+    - links inside inline code spans (`...`)
+    - escaped pipes in markdown tables are normalized before matching
+    - meta pages and lint-report files (their bodies are documentation of
+      links that may not exist as pages)
+    """
+    by_name = {p.name: p for p in pages}
+    seen: set[tuple[str, str]] = set()
+    for p in pages:
+        # Skip meta pages — their bodies legitimately reference operations
+        # logs, lint reports, etc.
+        if p.page_type == "meta" or p.folder == "meta":
+            continue
+
+        # Walk lines tracking fenced code-block state
+        in_code = False
+        for line_no, raw_line in enumerate(p.body.split("\n"), start=1):
+            stripped = raw_line.lstrip()
+            if stripped.startswith("```"):
+                in_code = not in_code
+                continue
+            if in_code:
+                continue
+            # Normalize: strip inline code, replace escaped pipes
+            line = re.sub(r"`[^`\n]*`", "", raw_line).replace(r"\|", "|")
+            for m in _WIKILINK_RE.finditer(line):
+                target = m.group(1).strip()
+                if target.startswith("raw/"):
+                    continue
+                if target in by_name:
+                    continue
+                key = (p.relpath(), target)
+                if key in seen:
+                    continue
+                seen.add(key)
+                yield Issue("dead-link", {
+                    "where": p.relpath(),
+                    "what": f"[[{target}]]",
+                    "context": f"line {line_no}",
+                })
+
+        # Frontmatter related / domain
+        if p.fm is None:
+            continue
+        for fld in ("related", "domain"):
+            values = p.fm.fields.get(fld)
+            if not isinstance(values, list):
+                continue
+            for v in values:
+                if not isinstance(v, str):
+                    continue
+                for target in _extract_wikilinks(v):
+                    if target.startswith("raw/"):
+                        continue
+                    if target in by_name:
+                        continue
+                    key = (p.relpath(), target)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    yield Issue("dead-link", {
+                        "where": p.relpath(),
+                        "what": f"[[{target}]]",
+                        "context": f"frontmatter {fld}",
+                    })
+
+
+def check_orphan(pages: list[Page]) -> Iterable[Issue]:
+    """Page with zero inbound wikilinks. Excludes meta pages (they're
+    infrastructure, not part of the knowledge graph) and the wiki root files
+    (index/log/cache/summary)."""
+    _, inbound = _build_link_graph(pages)
+    for p in pages:
+        if p.page_type == "meta":
+            continue
+        # also skip wiki root files even if they're not type:meta
+        if p.folder == "":
+            continue
+        if not inbound.get(p.name):
+            yield Issue("orphan", {"where": p.relpath()})
+
+
+def check_asymmetric_related(pages: list[Page]) -> Iterable[Issue]:
+    """A→B in related: but B→A missing. Reported once per pair (alphabetical)."""
+    by_name = {p.name: p for p in pages}
+
+    related_map: dict[str, set[str]] = {}
+    for p in pages:
+        if p.fm is None:
+            continue
+        related = p.fm.fields.get("related")
+        if not isinstance(related, list):
+            continue
+        targets: set[str] = set()
+        for v in related:
+            if not isinstance(v, str):
+                continue
+            for m in _WIKILINK_RE.finditer(v):
+                t = m.group(1).strip()
+                if not t.startswith("raw/"):
+                    targets.add(t)
+        related_map[p.name] = targets
+
+    seen: set[tuple[str, str]] = set()
+    for a, targets in related_map.items():
+        for b in targets:
+            if b not in by_name:
+                continue  # dead-link case, separate check
+            b_targets = related_map.get(b, set())
+            if a in b_targets:
+                continue  # symmetric
+            # Asymmetric. Report once per unordered pair (alphabetical key).
+            key = tuple(sorted([a, b]))
+            if key in seen:
+                continue
+            seen.add(key)
+            page_a, page_b = by_name[a], by_name[b]
+            yield Issue("asymmetric-related", {
+                "page_a": page_a.relpath(),
+                "page_b": page_b.relpath(),
+                "page_a_type": page_a.page_type,
+                "page_b_type": page_b.page_type,
+            })
+
+
+def check_dangling_domain_ref(pages: list[Page]) -> Iterable[Issue]:
+    """domain: ["[[X]]"] points to a non-existent wiki/domains/X.md."""
+    domain_pages = {p.name for p in pages if p.folder == "domains"}
+    for p in pages:
+        if p.fm is None:
+            continue
+        domains = p.fm.fields.get("domain")
+        if not isinstance(domains, list):
+            continue
+        for v in domains:
+            if not isinstance(v, str):
+                continue
+            for m in _WIKILINK_RE.finditer(v):
+                target = m.group(1).strip()
+                if target.startswith("raw/"):
+                    continue
+                if target not in domain_pages:
+                    yield Issue("dangling-domain-ref", {
+                        "where": p.relpath(),
+                        "missing_domain": target,
+                    })
+
+
 def check_folder_type_mismatch(pages: list[Page]) -> Iterable[Issue]:
     """Page in wiki/<X>/ must have type: matching the folder."""
     for p in pages:
@@ -463,6 +743,12 @@ _CHECKS: list[tuple[str, Any]] = [
     ("lowercase-tags", check_lowercase_tags),
     ("inline-tags", check_inline_tags),
     ("folder-type-mismatch", check_folder_type_mismatch),
+    ("raw-link-with-extension", check_raw_link_with_extension),
+    ("raw-ref-in-body", check_raw_ref_in_body),
+    ("dead-link", check_dead_link),
+    ("orphan", check_orphan),
+    ("asymmetric-related", check_asymmetric_related),
+    ("dangling-domain-ref", check_dangling_domain_ref),
 ]
 
 
