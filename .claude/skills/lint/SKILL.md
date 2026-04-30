@@ -104,6 +104,7 @@ Lint **только читает** wiki и записывает структур
 | `raw-ref-in-body` | упоминание `[[raw/...]]` в теле страницы | `{type, where, link, line}` |
 | `empty-sources-section` | секция `## Источники`/`## Источники упоминания` содержит только `[[raw/...]]` | `{type, where, section}` |
 | `folder-type-mismatch` | страница лежит в `wiki/<X>/`, но `type:` во frontmatter не соответствует папке | `{type, where, current_type, expected_type}` |
+| `stale-index-entry` | строка в `wiki/index.md` ссылается на несуществующую страницу (была удалена/переименована) | `{type, link, section}` |
 
 ### Ask user (ingest спрашивает решение)
 
@@ -146,9 +147,9 @@ Lint **только читает** wiki и записывает структур
 | 12 | Raw-refs в теле страницы | auto-fix |
 | 13 | "Sources"-секция с одним raw | auto-fix |
 | 13.1 | Папка vs `type:` во frontmatter | auto-fix |
+| 13.2 | Битые строки в `index.md` (ссылка на удалённую страницу) | auto-fix |
 | 14 | Пустые секции | skip |
 | 15 | Стилистические нарушения | skip |
-| 16 | Устаревшие записи в `index.md` (ведут на удалённые страницы) | ask |
 
 ---
 
