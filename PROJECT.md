@@ -360,7 +360,7 @@ Pattern взят из референсного проекта `claude-obsidian` 
 
 **Архитектура three-layer.**
 
-**Layer 1** (детерминистический): 16 типов программных проверок без LLM — статус enum, поля схемы, регистр тегов, сироты, мёртвые ссылки, dangling-domain-ref, asymmetric-related, структура index, бинарные источники вне formats. Запускается за секунды.
+**Layer 1** (детерминистический): 17 типов программных проверок без LLM — статус enum, поля схемы, регистр тегов, сироты, мёртвые ссылки, dangling-domain-ref, asymmetric-related, структура index, бинарные источники вне formats, **non-canonical-wikilink** (path-prefixed wikilinks вместо basename). Запускается за секунды.
 
 **Layer 1.5** (embedding-based, опционально через `--approx`): два типа semantic-проверок на pre-computed эмбеддингах:
 - `similar-but-unlinked` — пары страниц с высоким cosine но без wikilink (missing connections в графе знания)
@@ -1106,7 +1106,15 @@ Core: bases (включён), canvas, daily-notes, audio-recorder, sync.
 
 - **Безопасность по умолчанию:** Layer 1.5 — pure consumer векторов. Ollama не нужна для запуска lint, только pre-computed `embeddings.json`. Если файлы пустые/отсутствуют — graceful degradation с сообщением «run embed.py update».
 
-**Тесты:** +63 для embed.py + 10 для OpenAIEmbedder + 18 для Layer 1.5 = **190/190 pass**
+**Тесты:** 248/248 pass. По мере итераций добавлены: 63 для embed.py + 10 для OpenAIEmbedder + 18 для Layer 1.5 + 8 для contradiction-candidates + 9 для query/similar paths-and-meta + 15 для parse_index_summaries + 24 для нормализации wikilinks и check_non_canonical_wikilink.
+
+**Live-найденный баг — non-canonical wikilinks.** При первом прогоне `bin/embed.py query` на реальной wiki увидели что одна страница (RLHF) не получает summary в выводе — у всех остальных есть тире-описание, у RLHF только путь. Расследование: в `wiki/index.md` запись для RLHF использовала path-prefixed форму `[[wiki/ideas/RLHF]]` вместо канонической `[[RLHF]]`. Дальше выяснилось что эта же неправильная форма растеклась на 11 страниц в `related:` и теле. Lint в текущем виде квалифицировал это как **18 ложных issues** разных типов (10×dead-link, 1×stale-index, 1×missing-index, 6×asymmetric-related), причём auto-fix их «починил бы» с побочными эффектами (удалил бы запись из index, создал бы дубль).
+
+**Решение в два шага:**
+1. **Нормализация** в `_extract_wikilinks`, `_parse_index_tables`, всех инлайн-обработчиках wikilinks в lint-проверках, и в `embed.py:parse_index_summaries`. Path-prefixed targets (`wiki/ideas/RLHF` → `RLHF`) сводятся к basename для сравнения. raw/-targets не нормализуются (там есть структура папок).
+2. **Новая проверка `check_non_canonical_wikilink`** (auto-fix категория) — флагирует path-prefixed wiki-targets в теле страниц, frontmatter `related/domain` и таблицах `index.md`. Auto-fix payload построен через `_build_canonical_fix` чтобы сохранять `#anchor|alias` части: `[[wiki/ideas/RLHF#Section|alias]]` → `[[RLHF#Section|alias]]`.
+
+После применения: 18 ложных → 20 точечных issues с правильным auto-fix. На повторном прогоне — 0. Проверка работает на инфраструктурном уровне — будущие path-prefixed wikilinks в любых страницах ловятся сразу.
 
 **Тестирование выявило реальный баг:** на «плоских» распределениях (все cosine ≈ 0 или все drifts равны) percentile/std-based порог обнулялся → флагировались все пары. Решено через safety floor (`_MIN_SIMILARITY_FLOOR=0.6`, `_MIN_DRIFT_FLOOR=0.1`) + early return при `std == 0`. Хороший пример того, ради чего тесты пишутся.
 
@@ -1283,7 +1291,7 @@ Andrej Karpathy. **LLM Wiki gist** (2026). https://gist.github.com/karpathy/442a
 | Cross-project переиспользование | да (path-reference из CLAUDE.md) | Samurai — multi-CLI в одном репо |
 | Atom layer (immutable claims) | нет | cablate — есть |
 | Provenance-метки на claim | нет | Ar9av — есть |
-| Two-layer lint | да (16 программных + LLM-layer) | cablate — есть |
+| Two-layer lint | да (17 программных + LLM-layer) | cablate — есть |
 | Embedding-based lint (missing-links + synthesis-drift) | да (Layer 1.5, --approx) | ни у кого |
 | Synthesis-drift detection (детектор галлюцинаций) | да | ни у кого |
 | Typed graph edges | нет (плоские wikilinks) | OmegaWiki — есть |
