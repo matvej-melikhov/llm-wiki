@@ -1071,15 +1071,17 @@ Core: bases (включён), canvas, daily-notes, audio-recorder, sync.
 
 **Что введено:**
 
-- **`bin/embed.py`** (~430 строк) — embedding service:
-  - `Embedder` (abstract) + `OllamaEmbedder` (urllib, без зависимостей)
-  - Auto-fallback `/api/embed` → `/api/embeddings` при HTTP 404 (legacy Ollama)
+- **`bin/embed.py`** — embedding service:
+  - `Embedder` (abstract) + два провайдера (urllib, без зависимостей):
+    - `OllamaEmbedder` — Ollama native API. Auto-fallback `/api/embed` → `/api/embeddings` при HTTP 404 (legacy Ollama)
+    - `OpenAIEmbedder` — OpenAI-совместимый API (LMStudio, llama.cpp server, vLLM, OpenAI proper). Поддерживает Bearer-авторизацию для OpenAI
+  - Provider selection через `EMBED_PROVIDER=ollama|openai`
   - `EmbedIndex` — JSON-storage с hash-based invalidation
   - `update_index()` — пересчёт только изменившихся, прунинг устаревших, инвалидация при смене модели
   - `strip_frontmatter()` перед хешированием — изменения только во frontmatter (например status flip) не триггерят пересчёт эмбеддинга
   - `EmbedderUnavailable` — отдельный exception для graceful degradation
   - CLI: `update / query / similar / stats`
-  - Configuration через env: `EMBED_HOST`, `EMBED_MODEL`, `EMBED_TIMEOUT`
+  - Configuration через env: `EMBED_PROVIDER`, `EMBED_HOST`, `EMBED_MODEL`, `EMBED_API_KEY`, `EMBED_TIMEOUT`
 
 - **Two-tier storage:**
   ```
@@ -1093,7 +1095,7 @@ Core: bases (включён), canvas, daily-notes, audio-recorder, sync.
 
 - **Безопасность по умолчанию:** Layer 1.5 — pure consumer векторов. Ollama не нужна для запуска lint, только pre-computed `embeddings.json`. Если файлы пустые/отсутствуют — graceful degradation с сообщением «run embed.py update».
 
-**Тесты:** +63 для embed.py + 18 для Layer 1.5 = **180/180 pass**
+**Тесты:** +63 для embed.py + 10 для OpenAIEmbedder + 18 для Layer 1.5 = **190/190 pass**
 
 **Тестирование выявило реальный баг:** на «плоских» распределениях (все cosine ≈ 0 или все drifts равны) percentile/std-based порог обнулялся → флагировались все пары. Решено через safety floor (`_MIN_SIMILARITY_FLOOR=0.6`, `_MIN_DRIFT_FLOOR=0.1`) + early return при `std == 0`. Хороший пример того, ради чего тесты пишутся.
 

@@ -33,6 +33,7 @@ from embed import (
     EmbedIndex,
     EmbedRecord,
     OllamaEmbedder,
+    OpenAIEmbedder,
     content_hash,
     cosine,
     discover_raw_pages,
@@ -460,6 +461,94 @@ class TestOllamaEmbedder:
         with patch("urllib.request.urlopen", return_value=_mock_response({"unexpected": "field"})):
             with pytest.raises(EmbedderError):
                 emb.embed("text")
+
+
+# ────────────────────────────────────────────────────────────────────────
+# OpenAIEmbedder (LMStudio / llama.cpp / OpenAI proper)
+# ────────────────────────────────────────────────────────────────────────
+
+
+class TestOpenAIEmbedder:
+    def test_basic_embedding_response(self):
+        emb = OpenAIEmbedder(host="http://localhost:1234/v1", model="frida")
+        payload = {"data": [{"embedding": [0.1, 0.2, 0.3], "index": 0}]}
+        with patch("urllib.request.urlopen", return_value=_mock_response(payload)):
+            result = emb.embed("text")
+        assert result == [0.1, 0.2, 0.3]
+
+    def test_endpoint_uses_v1_embeddings(self):
+        emb = OpenAIEmbedder(host="http://localhost:1234/v1", model="frida")
+        captured = {}
+
+        def fake_urlopen(req, *args, **kwargs):
+            captured["url"] = req.full_url
+            captured["headers"] = {k.lower(): v for k, v in req.header_items()}
+            return _mock_response({"data": [{"embedding": [0.0]}]})
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            emb.embed("hello")
+        assert captured["url"].endswith("/v1/embeddings")
+
+    def test_api_key_in_authorization_header(self):
+        emb = OpenAIEmbedder(host="http://x/v1", model="m", api_key="sk-test123")
+        captured = {}
+
+        def fake_urlopen(req, *args, **kwargs):
+            captured["headers"] = {k.lower(): v for k, v in req.header_items()}
+            return _mock_response({"data": [{"embedding": [0.1]}]})
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            emb.embed("text")
+        assert captured["headers"]["authorization"] == "Bearer sk-test123"
+
+    def test_no_auth_header_when_no_key(self):
+        emb = OpenAIEmbedder(host="http://x/v1", model="m", api_key=None)
+        captured = {}
+
+        def fake_urlopen(req, *args, **kwargs):
+            captured["headers"] = {k.lower(): v for k, v in req.header_items()}
+            return _mock_response({"data": [{"embedding": [0.1]}]})
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            emb.embed("text")
+        assert "authorization" not in captured["headers"]
+
+    def test_url_error_raises_unavailable(self):
+        emb = OpenAIEmbedder(host="http://nowhere/v1", model="m")
+        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("refused")):
+            with pytest.raises(EmbedderUnavailable):
+                emb.embed("text")
+
+    def test_connection_error_raises_unavailable(self):
+        emb = OpenAIEmbedder(host="http://x/v1", model="m")
+        with patch("urllib.request.urlopen", side_effect=ConnectionError("boom")):
+            with pytest.raises(EmbedderUnavailable):
+                emb.embed("text")
+
+    def test_http_error_raises_error(self):
+        emb = OpenAIEmbedder(host="http://x/v1", model="m")
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=urllib.error.HTTPError("http://x/v1", 401, "Unauthorized", {}, None),
+        ):
+            with pytest.raises(EmbedderError):
+                emb.embed("text")
+
+    def test_unexpected_response_shape(self):
+        emb = OpenAIEmbedder(host="http://x/v1", model="m")
+        with patch("urllib.request.urlopen", return_value=_mock_response({"oops": True})):
+            with pytest.raises(EmbedderError):
+                emb.embed("text")
+
+    def test_empty_data_array(self):
+        emb = OpenAIEmbedder(host="http://x/v1", model="m")
+        with patch("urllib.request.urlopen", return_value=_mock_response({"data": []})):
+            with pytest.raises(EmbedderError):
+                emb.embed("text")
+
+    def test_host_trailing_slash_stripped(self):
+        emb = OpenAIEmbedder(host="http://x/v1/", model="m")
+        assert emb.host == "http://x/v1"
 
 
 # ────────────────────────────────────────────────────────────────────────
