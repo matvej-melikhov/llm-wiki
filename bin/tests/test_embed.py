@@ -612,6 +612,20 @@ class TestDiscoverWikiPages:
         assert "lint-report-2026-01-01" not in names
         assert "real-meta" in names
 
+    def test_skips_subdir_artifacts(self, tmp_path, monkeypatch):
+        # New layout: wiki/meta/lint-reports/ and wiki/meta/kn-maps/ subdirs
+        wiki = tmp_path / "wiki"
+        (wiki / "meta" / "lint-reports").mkdir(parents=True)
+        (wiki / "meta" / "kn-maps").mkdir(parents=True)
+        (wiki / "meta" / "lint-reports" / "lint-report-2026-05.md").write_text("r")
+        (wiki / "meta" / "kn-maps" / "knowledge-map-2026-05.md").write_text("k")
+        (wiki / "meta" / "real-meta.md").write_text("m")
+        monkeypatch.setattr(E, "WIKI_ROOT", wiki)
+        names = {n for n, _ in discover_wiki_pages()}
+        assert "lint-report-2026-05" not in names
+        assert "knowledge-map-2026-05" not in names
+        assert "real-meta" in names
+
     def test_no_wiki_dir_returns_empty(self, tmp_path, monkeypatch):
         monkeypatch.setattr(E, "WIKI_ROOT", tmp_path / "nonexistent")
         assert discover_wiki_pages() == []
@@ -688,6 +702,20 @@ class TestWikiPagePaths:
 
         paths = wiki_page_paths()
         assert "lint-report-2026-01-01" not in paths
+        assert "real-meta" in paths
+
+    def test_skips_subdir_artifacts(self, tmp_path, monkeypatch):
+        # Same artifacts in subdir layout — must also be skipped
+        wiki = tmp_path / "wiki"
+        (wiki / "meta" / "lint-reports").mkdir(parents=True)
+        (wiki / "meta" / "kn-maps").mkdir(parents=True)
+        (wiki / "meta" / "lint-reports" / "lint-report-2026-05.md").write_text("r")
+        (wiki / "meta" / "kn-maps" / "knowledge-map-2026-05.md").write_text("k")
+        (wiki / "meta" / "real-meta.md").write_text("m")
+        monkeypatch.setattr(E, "WIKI_ROOT", wiki)
+        paths = wiki_page_paths()
+        assert "lint-report-2026-05" not in paths
+        assert "knowledge-map-2026-05" not in paths
         assert "real-meta" in paths
 
     def test_no_wiki_dir_returns_empty(self, tmp_path, monkeypatch):

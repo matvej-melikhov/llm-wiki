@@ -46,9 +46,15 @@ llm-wiki/
 │   ├── questions/                 ← сохранённые ответы и синтезы
 │   ├── domains/                   ← навигационные хабы (MOC) для кластеризации
 │   └── meta/                      ← инфраструктура
-│       ├── dashboard.base         ← Obsidian Bases dashboard
-│       ├── lint-state.json        ← состояние lint (hash + open_issues)
-│       └── lint-report-*.md       ← опциональные снимки отчётов
+│       ├── embeddings.json        ← wiki page embeddings (ключ — basename)
+│       ├── dashboards/            ← Obsidian Bases (.base файлы)
+│       │   ├── dashboard.base     ←   общий dashboard
+│       │   └── <Domain>.base      ←   per-domain views
+│       ├── lint-reports/          ← lint state + версионированные отчёты
+│       │   ├── lint-state.json    ←   состояние lint (hash + open_issues)
+│       │   └── lint-report-*.md   ←   опциональные снимки
+│       └── kn-maps/               ← knowledge map snapshots
+│           └── knowledge-map-*.md ←   versioned (по дате)
 │
 ├── _templates/                    ← Obsidian Templater
 │   ├── idea.md
@@ -381,7 +387,7 @@ Pattern взят из референсного проекта `claude-obsidian` 
 - `--approx` — добавляет Layer 1.5
 - `--similarity-percentile / --drift-std` — тонкая настройка порогов
 
-**Только читает.** Записывает результат в `wiki/meta/lint-state.json`. Никогда не модифицирует content-файлы.
+**Только читает.** Записывает результат в `wiki/meta/lint-reports/lint-state.json`. Никогда не модифицирует content-файлы.
 
 #### Команды
 
@@ -392,7 +398,7 @@ Pattern взят из референсного проекта `claude-obsidian` 
 
 #### Skip-check (агрегатный hash)
 
-`wiki/meta/lint-state.json`:
+`wiki/meta/lint-reports/lint-state.json`:
 ```json
 {
   "wiki_hash": "<sha256 от всех wiki/**/*.md>",
@@ -603,7 +609,7 @@ CLI-обёртка над утилитой [defuddle](https://github.com/kepano/
 
 **Файл:** `.claude/skills/obsidian-bases/SKILL.md` (299 строк)
 
-Референс по Obsidian Bases (`.base` файлы): нативный database-слой Obsidian для динамических таблиц, card/list views, фильтров, формул. Применяется в `wiki/meta/dashboard.base` и в `wiki/domains/<X>.md` (для подтягивания всех страниц домена).
+Референс по Obsidian Bases (`.base` файлы): нативный database-слой Obsidian для динамических таблиц, card/list views, фильтров, формул. Применяется в `wiki/meta/dashboards/dashboard.base` и в `wiki/domains/<X>.md` (для подтягивания всех страниц домена).
 
 ---
 
@@ -732,7 +738,7 @@ view: table
 
 Используется `ingest` для дедупа (не ingest того же файла дважды).
 
-### `wiki/meta/lint-state.json`
+### `wiki/meta/lint-reports/lint-state.json`
 
 Состояние lint и список открытых проблем:
 
@@ -888,7 +894,7 @@ Core: bases (включён), canvas, daily-notes, audio-recorder, sync.
 
 ### Dashboard.base
 
-`wiki/meta/dashboard.base` — Obsidian Bases dashboard с 6 view:
+`wiki/meta/dashboards/dashboard.base` — Obsidian Bases dashboard с 6 view:
 - Recent Activity (table, последние 20)
 - Ideas (table)
 - Entities (table, group by entity_type)
