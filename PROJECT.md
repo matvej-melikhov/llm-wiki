@@ -1165,6 +1165,18 @@ Wiki-контент пока **не закоммичен** в репозитор
 7. **Long-context для эмбеддингов.** Сейчас используется `qwen/qwen3-embedding-8b` через OpenRouter (32k tokens — хватает с запасом). FRIDA как локальная альтернатива имеет limit 512 токенов — потребовал бы chunking + mean-pooling. Если в будущем переход на локальные модели окажется нужен (privacy, стоимость), реализовать `chunked_embed()` хелпер: greedy паковка по абзацам → fallback на предложения для длинных абзацев. Структуру `EmbedIndex` менять не нужно, mean-pooling работает на уровне `update_index`.
 8. **Меньшее покрытие meta-страниц в эмбеддингах.** Сейчас `bin/embed.py update` эмбеддит все wiki/*.md включая `cache.md`/`summary.md`/`log.md`. Lint их корректно фильтрует, но мы платим API-токенами за бесполезные вектора. Future: исключить meta-страницы из `discover_wiki_pages()` или добавить флаг.
 
+9. **Бенчмарк-харнесс для эмбеддинг-фич.** Сейчас валидация качества — голые числа («1485 пар → 261 candidate, 5.7× редукция»). Для ВКР нужна **формальная валидация**: показать что pre-filter сохраняет качество, не только режет данные. Реализация — `bin/benchmark.py` с подкомандами:
+
+    a. **`link-prediction`** (дёшево, без LLM-вызовов): wikilinks между страницами как ground truth для семантической связанности. Метрики: **recall@K** (для каждой страницы — % её wikilink-соседей среди top-K по cosine), **MAP** (mean average precision), **AUC**. Тестирует: правда ли embeddings захватывают ту же связанность что человек выразил через wikilinks.
+
+    b. **`contradiction-recall`** (контролируемо, средняя сложность): synthetic ground truth — программно (через Claude) генерируем N=20 пар с инжектированными противоречиями, сохраняем `bin/tests/fixtures/contradictions.json`. Прогоняем lint --approx с разными `--candidate-percentile` (50/75/90/95), меряем recall на каждом пороге. Получаем кривую recall vs reduction factor — точно показывает trade-off.
+
+    c. **`threshold-sweep`**: чувствительность каждого порога (similarity для missing-links, std для drift, percentile для contradiction-pre-filter) к качеству. Помогает калибровать дефолты.
+
+    d. **`cost-estimate`**: реальные $-цифры для Layer 2 token-consumption с/без --approx.
+
+    Вывод — markdown-таблица + опционально PNG (matplotlib) для вставки в ВКР как иллюстрация. Время реализации: 1 день для (a), ещё 1-2 для (b)-(d).
+
 ---
 
 ## 14. Принципиальные архитектурные решения
