@@ -1093,6 +1093,8 @@ Core: bases (включён), canvas, daily-notes, audio-recorder, sync.
   - `similar-but-unlinked` — пары страниц с высоким cosine, без wikilink между ними. Threshold = `max(percentile(sims, p), 0.6)`.
   - `synthesis-drift` — wiki-страницы, чей embedding сильно отклонился от центроида эмбеддингов источников. Threshold = `max(mean + 1.5×std, 0.1)`. Early exit при std==0.
 
+- **`contradiction_candidates`** — отдельное поле в `lint-state.json` (не issue), список пар страниц для Layer 2 LLM-проверки на противоречия. Top X% по cosine (default p75, floor 0.5). Excludes meta-страниц и уже-связанные пары допускаются (контрадикции бывают и между связанными). На live-wiki из 1485 пар → 261 candidate (5.7× редукция работы для LLM).
+
 - **Безопасность по умолчанию:** Layer 1.5 — pure consumer векторов. Ollama не нужна для запуска lint, только pre-computed `embeddings.json`. Если файлы пустые/отсутствуют — graceful degradation с сообщением «run embed.py update».
 
 **Тесты:** +63 для embed.py + 10 для OpenAIEmbedder + 18 для Layer 1.5 = **190/190 pass**

@@ -48,6 +48,7 @@ from lint import (
     check_status_not_in_enum,
     check_status_on_entity,
     check_synthesis_drift,
+    compute_contradiction_candidates,
     compute_wiki_hash,
     parse_frontmatter,
 )
@@ -1009,3 +1010,120 @@ class TestCheckSynthesisDrift:
         # Wiki vec equals centroid of sources → very low drift
         issues = list(check_synthesis_drift([page], wiki_idx, raw_idx))
         assert len(issues) == 0
+
+
+# ────────────────────────────────────────────────────────────────────────
+# compute_contradiction_candidates (Layer 2 pre-filter)
+# ────────────────────────────────────────────────────────────────────────
+
+
+class TestComputeContradictionCandidates:
+    def test_high_similarity_pairs_returned(self):
+        a = make_page(name="A", fm_yaml="type: idea")
+        b = make_page(name="B", fm_yaml="type: idea")
+        c = make_page(name="C", fm_yaml="type: idea")
+        idx = _make_idx([
+            ("A", [1.0, 0.0]),
+            ("B", [0.95, 0.05]),
+            ("C", [0.0, 1.0]),
+        ])
+        candidates = compute_contradiction_candidates(
+            [a, b, c], idx, threshold_percentile=50,
+        )
+        # A and B are highly similar; C is orthogonal
+        assert len(candidates) == 1
+        flagged = {candidates[0]["page_a"], candidates[0]["page_b"]}
+        assert flagged == {a.relpath(), b.relpath()}
+
+    def test_below_floor_excluded(self):
+        # All similarities below the 0.5 floor → no candidates
+        a = make_page(name="A", fm_yaml="type: idea")
+        b = make_page(name="B", fm_yaml="type: idea")
+        idx = _make_idx([
+            ("A", [1.0, 0.0]),
+            ("B", [0.0, 1.0]),  # cosine = 0
+        ])
+        assert compute_contradiction_candidates([a, b], idx, threshold_percentile=50) == []
+
+    def test_meta_pages_excluded(self):
+        cache = make_page(folder="", name="cache", fm_yaml="type: meta")
+        summary = make_page(folder="", name="summary", fm_yaml="type: meta")
+        idea = make_page(name="X", fm_yaml="type: idea")
+        idx = _make_idx([
+            ("cache", [1.0, 0.0]),
+            ("summary", [0.99, 0.01]),  # high sim with cache
+            ("X", [0.0, 1.0]),
+        ])
+        candidates = compute_contradiction_candidates(
+            [cache, summary, idea], idx, threshold_percentile=50,
+        )
+        # cache+summary pair must not appear despite high similarity
+        assert candidates == []
+
+    def test_sorted_by_similarity_descending(self):
+        a = make_page(name="A", fm_yaml="type: idea")
+        b = make_page(name="B", fm_yaml="type: idea")
+        c = make_page(name="C", fm_yaml="type: idea")
+        d = make_page(name="D", fm_yaml="type: idea")
+        idx = _make_idx([
+            ("A", [1.0, 0.0]),
+            ("B", [0.95, 0.05]),    # cos(A,B) ≈ 0.9999
+            ("C", [0.7, 0.7]),      # moderate sim with both A and B
+            ("D", [0.6, 0.8]),      # also moderate
+        ])
+        candidates = compute_contradiction_candidates(
+            [a, b, c, d], idx, threshold_percentile=10, min_similarity=0.5,
+        )
+        # Verify sorted descending
+        sims = [c["similarity"] for c in candidates]
+        assert sims == sorted(sims, reverse=True)
+
+    def test_empty_index(self):
+        idx = EmbedIndex(Path("/dev/null"))
+        a = make_page(name="A", fm_yaml="type: idea")
+        assert compute_contradiction_candidates([a], idx) == []
+
+    def test_pair_reported_once(self):
+        # Symmetric pair — only one entry, never (A,B) and (B,A)
+        a = make_page(name="A", fm_yaml="type: idea")
+        b = make_page(name="B", fm_yaml="type: idea")
+        c = make_page(name="C", fm_yaml="type: idea")  # orthogonal — avoids degenerate distribution
+        idx = _make_idx([
+            ("A", [1.0, 0.0]),
+            ("B", [0.99, 0.01]),
+            ("C", [0.0, 1.0]),
+        ])
+        candidates = compute_contradiction_candidates(
+            [a, b, c], idx, threshold_percentile=50, min_similarity=0.5,
+        )
+        assert len(candidates) == 1
+
+    def test_stale_index_entry_skipped(self):
+        # Embedding for non-existent page is silently skipped
+        a = make_page(name="A", fm_yaml="type: idea")
+        idx = _make_idx([
+            ("A", [1.0, 0.0]),
+            ("Deleted", [0.99, 0.01]),
+        ])
+        candidates = compute_contradiction_candidates(
+            [a], idx, threshold_percentile=10, min_similarity=0.5,
+        )
+        # Need 2 valid pages to form a pair; only A is valid → empty
+        assert candidates == []
+
+    def test_includes_already_linked_pairs(self):
+        # Unlike check_similar_but_unlinked, this DOES include linked pairs —
+        # contradictions can exist between pages that are already linked.
+        a = make_page(name="A", fm_yaml="type: idea", body="See [[B]].\n")
+        b = make_page(name="B", fm_yaml="type: idea")
+        c = make_page(name="C", fm_yaml="type: idea")
+        idx = _make_idx([
+            ("A", [1.0, 0.0]),
+            ("B", [0.95, 0.05]),
+            ("C", [0.0, 1.0]),
+        ])
+        candidates = compute_contradiction_candidates(
+            [a, b, c], idx, threshold_percentile=50, min_similarity=0.5,
+        )
+        # Linked or not — both pairs go to Layer 2 for inspection
+        assert len(candidates) == 1
