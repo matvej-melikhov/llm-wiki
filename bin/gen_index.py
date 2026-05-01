@@ -105,7 +105,10 @@ def main() -> int:
         rows = collect_section(folder)
         parts.append("")
         parts.append(render_section(title, rows))
-    INDEX.write_text("\n".join(parts), encoding="utf-8")
+    new_text = "\n".join(parts)
+    if INDEX.exists() and INDEX.read_text(encoding="utf-8") == new_text:
+        return 0
+    INDEX.write_text(new_text, encoding="utf-8")
     return 0
 
 
