@@ -35,7 +35,6 @@ from lint import (
     check_binary_source_outside_formats,
     check_dangling_domain_ref,
     check_dead_link,
-    check_domain_order,
     check_empty_section,
     check_folder_type_mismatch,
     check_inline_tags,
@@ -745,104 +744,6 @@ class TestCheckAsymmetricRelated:
 # ────────────────────────────────────────────────────────────────────────
 # check_dangling_domain_ref
 # ────────────────────────────────────────────────────────────────────────
-
-
-class TestCheckDomainOrder:
-    """`domain:` list must be ordered specific (fewest members) → general
-    (most members). Auto-fix sorts ascending by count."""
-
-    def _domain_pages(self):
-        # Stand-in for actual domain pages; not strictly required by
-        # check_domain_order (it counts references in `domain:` fields).
-        return []
-
-    def test_correct_order_no_issue(self):
-        # RL has 1 page that lists it (only A); ML has 2 (A and B).
-        # A's domain order [RL, ML] is correct (1 < 2).
-        a = make_page(
-            name="A",
-            fm_yaml='type: idea\ndomain:\n  - "[[RL]]"\n  - "[[ML]]"',
-        )
-        b = make_page(name="B", fm_yaml='type: idea\ndomain:\n  - "[[ML]]"')
-        assert types_of(check_domain_order([a, b])) == []
-
-    def test_wrong_order_flagged(self):
-        # A has [ML (count 2), RL (count 1)] — broad first, narrow second.
-        # Should flag with fix [RL, ML].
-        a = make_page(
-            name="A",
-            fm_yaml='type: idea\ndomain:\n  - "[[ML]]"\n  - "[[RL]]"',
-        )
-        b = make_page(name="B", fm_yaml='type: idea\ndomain:\n  - "[[ML]]"')
-        issues = issues_of(check_domain_order([a, b]))
-        assert len(issues) == 1
-        assert issues[0].type == "domain-order"
-        assert issues[0].payload["current"] == ["ML", "RL"]
-        assert issues[0].payload["expected"] == ["RL", "ML"]
-
-    def test_single_domain_skipped(self):
-        a = make_page(name="A", fm_yaml='type: idea\ndomain:\n  - "[[ML]]"')
-        assert types_of(check_domain_order([a])) == []
-
-    def test_no_domain_field_skipped(self):
-        a = make_page(name="A", fm_yaml="type: idea")
-        assert types_of(check_domain_order([a])) == []
-
-    def test_three_domains_correct_order(self):
-        # Counts: IR=1 (only A), RL=2 (A, B), ML=3 (A, B, C)
-        # A's [IR, RL, ML] is ascending → ok
-        a = make_page(
-            name="A",
-            fm_yaml='type: idea\ndomain:\n  - "[[IR]]"\n  - "[[RL]]"\n  - "[[ML]]"',
-        )
-        b = make_page(
-            name="B",
-            fm_yaml='type: idea\ndomain:\n  - "[[RL]]"\n  - "[[ML]]"',
-        )
-        c = make_page(name="C", fm_yaml='type: idea\ndomain:\n  - "[[ML]]"')
-        assert types_of(check_domain_order([a, b, c])) == []
-
-    def test_three_domains_wrong_order(self):
-        # Counts: IR=1, RL=2, ML=3. A's [ML, IR, RL] is wrong.
-        a = make_page(
-            name="A",
-            fm_yaml='type: idea\ndomain:\n  - "[[ML]]"\n  - "[[IR]]"\n  - "[[RL]]"',
-        )
-        b = make_page(
-            name="B",
-            fm_yaml='type: idea\ndomain:\n  - "[[RL]]"\n  - "[[ML]]"',
-        )
-        c = make_page(name="C", fm_yaml='type: idea\ndomain:\n  - "[[ML]]"')
-        issues = issues_of(check_domain_order([a, b, c]))
-        assert len(issues) == 1
-        assert issues[0].payload["expected"] == ["IR", "RL", "ML"]
-
-    def test_ties_accepted_in_any_order(self):
-        # Two domains with equal counts: either order is acceptable.
-        # Counts: A_dom=1, B_dom=1 → both pages tie.
-        a = make_page(
-            name="A",
-            fm_yaml='type: idea\ndomain:\n  - "[[Foo]]"\n  - "[[Bar]]"',
-        )
-        # Mirror: another page using same domains in reverse
-        b = make_page(
-            name="B",
-            fm_yaml='type: idea\ndomain:\n  - "[[Bar]]"\n  - "[[Foo]]"',
-        )
-        # With ties allowed, neither should be flagged
-        assert types_of(check_domain_order([a, b])) == []
-
-    def test_path_prefixed_wikilink_normalized(self):
-        # [[wiki/domains/RL]] should be treated same as [[RL]]
-        a = make_page(
-            name="A",
-            fm_yaml='type: idea\ndomain:\n  - "[[ML]]"\n  - "[[wiki/domains/RL]]"',
-        )
-        b = make_page(name="B", fm_yaml='type: idea\ndomain:\n  - "[[ML]]"')
-        # ML count=2, RL count=1, A's order [ML, RL] is wrong
-        issues = issues_of(check_domain_order([a, b]))
-        assert len(issues) == 1
-        assert issues[0].payload["expected"] == ["RL", "ML"]
 
 
 class TestCheckDanglingDomainRef:

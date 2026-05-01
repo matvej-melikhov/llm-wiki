@@ -959,72 +959,6 @@ def check_dangling_domain_ref(pages: list[Page]) -> Iterable[Issue]:
                     })
 
 
-def _extract_page_domain_targets(p: Page) -> list[str]:
-    """Pull wikilink basenames from the `domain:` frontmatter field of a page,
-    in their original list order. raw/ targets are filtered out (shouldn't
-    appear in domain field, but be defensive)."""
-    if p.fm is None:
-        return []
-    raw = p.fm.fields.get("domain")
-    if not isinstance(raw, list):
-        return []
-    out: list[str] = []
-    for v in raw:
-        if not isinstance(v, str):
-            continue
-        for m in _WIKILINK_RE.finditer(v):
-            target = _normalize_wiki_target(m.group(1).strip())
-            if not target.startswith("raw/"):
-                out.append(target)
-    return out
-
-
-def check_domain_order(pages: list[Page]) -> Iterable[Issue]:
-    """`domain:` frontmatter list must be ordered from specific to general
-    (= ascending by member count across the vault).
-
-    Why this matters: many downstream tools (knowledge map color,
-    potentially future per-page-primary-domain features) treat the FIRST
-    domain in the list as the page's primary classification. Without an
-    ordering rule, two equivalent pages can render with different colors
-    just because their authors typed domains in different orders. This
-    check enforces a deterministic convention.
-
-    Member count = number of pages whose `domain:` references this domain.
-    Smaller count = more specific domain. Convention: list specific first.
-
-    Ties (two domains with equal counts) accept any order — to keep noise
-    low. Auto-fix breaks ties alphabetically for stable output.
-
-    Single-domain pages and pages without `domain:` are skipped (nothing
-    to order).
-    """
-    # Count member pages per domain across vault
-    counts: dict[str, int] = {}
-    for p in pages:
-        for d in _extract_page_domain_targets(p):
-            counts[d] = counts.get(d, 0) + 1
-
-    for p in pages:
-        domains = _extract_page_domain_targets(p)
-        if len(domains) < 2:
-            continue
-        # Check: counts are non-strictly increasing (ties allowed in either order)
-        violation = any(
-            counts.get(domains[i], 0) > counts.get(domains[i + 1], 0)
-            for i in range(len(domains) - 1)
-        )
-        if not violation:
-            continue
-        # Auto-fix order: by count ascending; alphabetical tiebreak
-        expected = sorted(domains, key=lambda d: (counts.get(d, 0), d))
-        yield Issue("domain-order", {
-            "where": p.relpath(),
-            "current": domains,
-            "expected": expected,
-        })
-
-
 def _build_canonical_fix(original: str, normalized_target: str) -> str:
     """Build a fix string for non-canonical wikilink that preserves #anchor
     and |alias parts.
@@ -1203,7 +1137,6 @@ _CHECKS: list[tuple[str, Any]] = [
     ("orphan", check_orphan),
     ("asymmetric-related", check_asymmetric_related),
     ("dangling-domain-ref", check_dangling_domain_ref),
-    ("domain-order", check_domain_order),
     ("stale-index-entry", check_stale_index_entry),
     ("missing-index-entry", check_missing_index_entry),
     ("empty-section", check_empty_section),
