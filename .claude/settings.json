@@ -53,7 +53,7 @@
           },
           {
             "type": "command",
-            "command": "cd \"$PWD\" && [ -f bin/embed.py ] && python3 bin/embed.py update >/dev/null 2>&1 || true",
+            "command": "cd \"$PWD\"; [ -f .env ] && { set -a; . ./.env; set +a; }; [ -f bin/embed.py ] && python3 bin/embed.py update >/dev/null 2>&1 || true",
             "async": true,
             "timeout": 600
           }
