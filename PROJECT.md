@@ -2,8 +2,8 @@
 
 Документ полностью описывает текущее состояние проекта `llm-wiki`. Поддерживается параллельно с разработкой и используется как материал для ВКР.
 
-**Дата последнего обновления:** 2026-04-29
-**Текущий HEAD:** `0f39010`
+**Дата последнего обновления:** 2026-05-01
+**Текущий HEAD:** `(embeddings branch — Этап 11)`
 
 ---
 
@@ -29,7 +29,7 @@ llm-wiki/
 ├── .gitignore
 │
 ├── raw/                           ← Уровень 1: иммутабельные источники
-│   ├── formats/                   ← бинарные оригиналы (PDF, DOCX, audio)
+│   ├── formats/                   ← бинарные оригиналы (PDF, DOCX, audio, video)
 │   ├── meta/
 │   │   └── ingested.json          ← манифест (sha256 оригинала + транскрипта)
 │   ├── RLHF.md                    ← пример источника в markdown
@@ -67,7 +67,7 @@ llm-wiki/
 │       ├── ingest/                ← синтез источников (8-фазный workflow)
 │       ├── query/                 ← запросы к wiki (3 режима)
 │       ├── lint/                  ← read-only ревьюер (two-layer)
-│       ├── transcribe/            ← конвертация PDF/DOCX в markdown (two-step)
+│       ├── transcribe/            ← конвертация PDF/DOCX/audio/video в markdown
 │       ├── save/                  ← файлирование разговоров
 │       ├── defuddle/              ← очистка URL → дословный markdown
 │       ├── obsidian-markdown/     ← reference: Obsidian Flavored Markdown
@@ -83,10 +83,14 @@ llm-wiki/
 │   └── plugins/                   ← brat, claudian, terminal
 │
 └── bin/                           ← скрипты обслуживания
-    ├── lint.py                    ← Layer 1 lint: 14 детерминистических проверок
-    ├── transcribe.py              ← Step 1 pipeline: PDF/DOCX → raw markdown (pymupdf4llm/pandoc)
-    ├── requirements.txt           ← Python-зависимости (pymupdf4llm)
-    ├── setup.sh                   ← установка всех зависимостей
+    ├── lint.py                    ← Layer 1 + 1.5 lint (16 detect + 2 embedding-based)
+    ├── embed.py                   ← embedding service (Ollama HTTP, EmbedIndex, CLI)
+    ├── transcribe.py              ← Step 1 pipeline: PDF/DOCX/audio/video → raw markdown
+    ├── tests/                     ← pytest: 180 тестов (lint + embed)
+    │   ├── test_lint.py           ← 99 тестов всех check'ов и хелперов
+    │   └── test_embed.py          ← 63 теста vector math, EmbedIndex, Ollama mocking
+    ├── requirements.txt           ← Python-зависимости (pymupdf4llm + pytest)
+    ├── setup.sh                   ← установка всех зависимостей (incl. whisper-cpp, ffmpeg)
     └── setup-vault.sh             ← (legacy)
 ```
 
@@ -347,23 +351,35 @@ Pattern взят из референсного проекта `claude-obsidian` 
 
 Хорошие ответы предлагается сохранить как `wiki/questions/<title>.md`. Frontmatter включает `question:`, `answer_quality`, `related`, `sources`.
 
-### 5.4 lint — read-only ревьюер (two-layer)
+### 5.4 lint — read-only ревьюер (three-layer)
 
 **Файлы:**
-- `bin/lint.py` (~700 строк Python) — Layer 1: программные проверки
+- `bin/lint.py` (~1200 строк Python) — Layer 1 + Layer 1.5
+- `bin/embed.py` — embedding service (используется Layer 1.5)
 - `.claude/skills/lint/SKILL.md` — Layer 2: LLM-семантические проверки
 
-**Архитектура two-layer.** 13 из 16 проверок детерминированы и реализованы как чистый Python в `bin/lint.py` без LLM-стоимости — статус enum, поля схемы, регистр тегов, сирот, мёртвых ссылок, dangling-domain-ref, asymmetric-related, structure index. Запускается за секунды.
+**Архитектура three-layer.**
 
-3 проверки требуют семантического суждения и остаются за LLM (Layer 2 — этот скилл): `contradiction`, `outdated-claim`, `missing-concept`, плюс `style-nit` (skip-категория).
+**Layer 1** (детерминистический): 16 типов программных проверок без LLM — статус enum, поля схемы, регистр тегов, сироты, мёртвые ссылки, dangling-domain-ref, asymmetric-related, структура index, бинарные источники вне formats. Запускается за секунды.
+
+**Layer 1.5** (embedding-based, опционально через `--approx`): два типа semantic-проверок на pre-computed эмбеддингах:
+- `similar-but-unlinked` — пары страниц с высоким cosine но без wikilink (missing connections в графе знания)
+- `synthesis-drift` — wiki-страницы, чей embedding далеко от центроида эмбеддингов источников (детектор галлюцинаций синтеза)
+
+Оба порога адаптивные (по перцентилю/std распределения), плюс абсолютные floor-значения (cosine ≥ 0.6, drift ≥ 0.1) — защита от ложных срабатываний на «плоских» распределениях. Ollama не нужна для запуска lint — только pre-computed `embeddings.json`.
+
+**Layer 2** (LLM-семантический): требует языкового суждения — `contradiction`, `outdated-claim`, `missing-concept`, плюс `style-nit` (skip-категория).
 
 Полный поток `/lint`:
 ```
-1. python3 bin/lint.py        # Layer 1: пишет lint-state.json
-2. lint skill (LLM)            # Layer 2: дополняет open_issues
+1. python3 bin/lint.py [--approx]   # Layer 1 (+ 1.5 если --approx)
+2. lint skill (LLM)                  # Layer 2
 ```
 
-`/lint --fast` пропускает Layer 2 — чисто программно, мгновенно.
+Флаги:
+- `--fast` — пропускает Layer 2
+- `--approx` — добавляет Layer 1.5
+- `--similarity-percentile / --drift-std` — тонкая настройка порогов
 
 **Только читает.** Записывает результат в `wiki/meta/lint-state.json`. Никогда не модифицирует content-файлы.
 
@@ -443,7 +459,7 @@ Workflow:
 9. Дописать в log.md
 10. Обновить cache.md
 
-### 5.6 transcribe — конвертация PDF/DOCX в markdown
+### 5.6 transcribe — конвертация бинарных источников в markdown
 
 **Структура:**
 ```
@@ -454,35 +470,115 @@ Workflow:
     └── wiki-integration.md        ← frontmatter, sources, dedup, ingest-routing
 ```
 
-**Two-step pipeline:**
+#### Поддерживаемые форматы
 
-1. **Step 1 — механическая конвертация** (`bin/transcribe.py`): запускается через Bash без LLM. `pymupdf4llm` (PDF) или `pandoc` (DOCX) извлекают текст + изображения. Изображения падают в `_attachments/`, сырой markdown выводится в stdout с мета-блоком `<!-- transcribe-meta -->`. Для PDF > 100 страниц Step 2 пропускается.
+| Формат | Библиотека | Изображения | Транскрипт |
+|---|---|---|---|
+| `.pdf` | pymupdf | ✓ | — |
+| `.docx` | pandoc | ✓ | — |
+| `.mp3/.wav/.m4a/.ogg/.flac` | ffmpeg → whisper-cpp | — | ✓ |
+| `.mp4/.mov/.mkv/.webm` | ffmpeg → whisper-cpp | — | ✓ |
 
-2. **Step 2 — агентское восстановление**: агент читает сырой вывод в память (без промежуточного файла), восстанавливает структуру оригинала — правит артефакты конвертации, переводит пути к изображениям `_attachments/img.png` → `![[img.png]]`. **Ничего не придумывает** — только восстановление.
+#### Two-step pipeline (PDF/DOCX)
 
-**Файловая структура:**
+1. **Step 1а — `bin/transcribe.py`**: запускается через Bash без LLM. Для PDF: `pymupdf` извлекает изображения (bounding-box рендеринг, стратегия raster vs vector). Для DOCX: `pandoc --extract-media`. Изображения падают в `_attachments/`, скрипт выводит JSON-манифест в stdout.
+
+2. **Step 1б — Read tool**: агент читает оригинальный PDF нативно через multimodal Read. Это критично — позволяет корректно видеть формулы LaTeX, таблицы и текст сканов (лучше любой OCR-библиотеки).
+
+3. **Step 2 — агентское восстановление**: агент пишет финальный markdown дословно по оригиналу: структура, формулы (`$...$`, `$$...$$`), таблицы, списки, жирный/курсив, ссылки. Изображения из манифеста встраиваются через `![[img.png]]`. **Запрещено** сокращать, перефразировать, добавлять комментарии. Для PDF > 100 страниц Step 2 пропускается.
+
+#### Audio/video pipeline
+
 ```
-raw/formats/paper.pdf     ← оригинал (иммутабельный)
-raw/paper.md              ← восстановленный markdown
-_attachments/img.png      ← изображения из документа
+raw/formats/lecture.mp3
+         ↓
+bin/transcribe.py  →  ffmpeg: → 16 kHz mono WAV  →  whisper-cpp  →  _attachments/lecture.transcript.txt
+         ↓
+Манифест: { "transcript": "_attachments/lecture.transcript.txt" }
+         ↓
+Step 2: агент читает транскрипт через Read, структурирует на разделы (## заголовки по теме),
+        расставляет абзацы, исправляет ошибки распознавания, убирает слова-паразиты.
+        Сохраняет raw/lecture.md.
+```
+
+Для видео ffmpeg прозрачно извлекает аудиодорожку — дальше идентично аудио.
+
+Модель whisper-cpp задаётся через `$WHISPER_MODEL` (путь к `ggml-*.bin`). По умолчанию: `~/models/ggml-base.bin`.
+
+#### Файловая структура
+
+```
+raw/formats/paper.pdf           ← оригинал (иммутабельный)
+raw/paper.md                    ← восстановленный markdown
+_attachments/paper-p0-img0.png  ← изображения из PDF
+_attachments/lecture.transcript.txt  ← сырой транскрипт аудио
 ```
 
 **Frontmatter транскрипта:**
 ```yaml
-source_type: pdf
+source_type: pdf   # или docx / mp3 / mp4 / …
 original_file: raw/formats/paper.pdf
 restored: true
-restored_at: 2026-05-01T...
+restored_at: 2026-05-01T10:30:00
 pages: 26
 ```
 
-**В `sources:` wiki-страниц** — только `[[raw/paper.md]]`. Оригинальный бинарник не вставляется — он не рендерится в Obsidian.
+**В `sources:` wiki-страниц** — только `[[raw/paper]]`. Оригинальный бинарник не вставляется — он не рендерится в Obsidian.
 
-**Манифест** хранит два hash: `original_hash` (бинарник) и `restored_hash` (md). Dedup по обоим.
+**Дедуп**: простой файловый (mtime) — если `raw/<stem>.md` существует и новее оригинала → skip. `--force` обходит.
 
-Вызывается самостоятельно (`/transcribe raw/formats/paper.pdf`) или автоматически из `ingest` при обнаружении `.pdf`/`.docx`.
+Вызывается самостоятельно (`/transcribe raw/formats/paper.pdf`) или автоматически из `ingest` при обнаружении бинарного формата.
 
-### 5.7 defuddle — очистка URL для ingestion
+#### Команды
+
+| Команда | Поведение |
+|---|---|
+| `/transcribe <file>` | Полный pipeline: Step 1 + Step 2 |
+| `/transcribe --no-restore <file>` | Только Step 1 (для больших документов) |
+| `/transcribe --ingest <file>` | Pipeline + автоматически `/ingest` на результате |
+
+### 5.7 Генерация схем и графиков
+
+Claude умеет создавать визуальный контент двумя способами без дополнительных плагинов:
+
+#### Mermaid (схемы — встроено в Obsidian)
+
+Любой блок ` ```mermaid ` рендерится Obsidian нативно. Поддерживаемые типы:
+- `flowchart` / `graph` — блок-схемы, пайплайны, архитектурные диаграммы
+- `sequenceDiagram` — взаимодействие агентов, API-сценарии
+- `classDiagram` — структуры данных, схемы классов
+- `gantt` — временные линии
+- `pie` — круговые диаграммы
+
+Пример (встраивается в любую wiki-страницу):
+```
+```mermaid
+graph TD
+    A[raw/] --> B[/transcribe/]
+    B --> C[raw/*.md]
+    C --> D[/ingest/]
+    D --> E[wiki/]
+```
+```
+
+#### Matplotlib / plotlib (графики данных — через Bash)
+
+Если нужен настоящий растровый график: Claude пишет Python-скрипт, запускает через Bash tool, сохраняет `_attachments/<name>.png`, затем встраивает через `![[name.png]]` в нужную wiki-страницу.
+
+Подходит для: гистограмм, scatter plot, кривых обучения, дистрибуций.
+
+#### Когда какой использовать
+
+| Задача | Инструмент |
+|---|---|
+| Архитектурная схема, пайплайн | Mermaid |
+| Граф зависимостей, иерархия | Mermaid |
+| График данных (числа, кривые) | matplotlib → PNG |
+| Диаграмма последовательности | Mermaid sequenceDiagram |
+
+---
+
+### 5.8 defuddle — очистка URL для ingestion
 
 **Файл:** `.claude/skills/defuddle/SKILL.md`
 
@@ -497,13 +593,13 @@ CLI-обёртка над утилитой [defuddle](https://github.com/kepano/
 
 **Установка:** `npm install -g defuddle`. Зависимость от Node.js. Защищает проект от использования Anthropic-овского WebFetch, который возвращает суммаризацию вместо дословного текста.
 
-### 5.7 obsidian-markdown — reference
+### 5.9 obsidian-markdown — reference
 
 **Файл:** `.claude/skills/obsidian-markdown/SKILL.md` (188 строк)
 
 Референс по корректному Obsidian Flavored Markdown: wikilinks, embeds, properties, теги, math, таблицы, mermaid. Используется другими скиллами при создании страниц.
 
-### 5.8 obsidian-bases — reference
+### 5.10 obsidian-bases — reference
 
 **Файл:** `.claude/skills/obsidian-bases/SKILL.md` (299 строк)
 
@@ -908,6 +1004,110 @@ Core: bases (включён), canvas, daily-notes, audio-recorder, sync.
 - `/ingest --fix` точка входа для починки вне synthesis-цикла
 - Категоризация issue-типов на auto-fix / ask / skip
 
+### Этап 9: Transcribe pipeline + audio/video поддержка
+
+**Что не хватало:** только markdown-источники. Реальные исследовательские материалы приходят в PDF, DOCX, а теперь — лекции/доклады в аудио и видео.
+
+**Что введено:**
+
+- `bin/transcribe.py` — Step 1: механическая обработка без LLM
+  - PDF: `pymupdf` с bbox-рендерингом изображений (raster стратегия) + vector-fallback (skip + описание)
+  - DOCX: `pandoc --extract-media`
+  - Audio (`.mp3/.wav/.m4a/.ogg/.flac`): ffmpeg → 16 kHz WAV → whisper-cpp → `.transcript.txt`
+  - Video (`.mp4/.mov/.mkv/.webm`): ffmpeg прозрачно извлекает аудиодорожку → тот же pipeline
+  - JSON-манифест в stdout (поля: `source`, `format`, `pages`, `large_doc`, `images`, `transcript`)
+- `.claude/skills/transcribe/` — двухшаговый скилл-router
+  - Step 1б: Read tool на PDF (multimodal — лучше OCR для формул и сканов)
+  - Step 2: строгие правила дословной транскрипции (запрет сокращений, перефразирования)
+  - Исключение для аудио: агент вправе структурировать на разделы, чистить слова-паразиты
+- `bin/setup.sh`: добавлены `whisper-cpp`, `ffmpeg`, инструкция по скачиванию модели (`ggml-base.bin`)
+- Модель whisper через `$WHISPER_MODEL` env var; fallback на `~/models/ggml-base.bin`
+
+**Ошибки при разработке и как исправлены:**
+- "Invalid bandwriter header dimensions" при рендеринге PDF → добавлен фильтр min-size + try/except
+- Vector PDF возвращал 0 изображений через `get_image_info()` → skip с текстовым плейсхолдером вместо full-page render
+- Transcribe ошибочно писал в `ingested.json` → убрано; transcribe использует только mtime-дедуп
+- Step 2 сокращал содержание → усилены правила в SKILL.md с явными запретами
+
+### Этап 10: Unit-тесты для bin/lint.py
+
+**Цель:** доказать корректность и воспроизводимость Layer 1 lint — важно для ВКР как демонстрация тестируемой архитектуры.
+
+**Что создано:** `bin/tests/test_lint.py` — 97 тестов на pytest.
+
+**Структура:**
+
+| Класс | Что тестирует | Тестов |
+|---|---|---|
+| `TestParseFrontmatter` | YAML-парсер: поля, списки, wikilinks, null, отсутствие FM | 7 |
+| `TestExpectedTagCasing` | Эвристика регистра тегов (ML, LoRA, lowercase) | 7 |
+| `TestExtractWikilinks` | Regex wikilinks: alias, anchor, embed, fenced code, escaped pipe | 8 |
+| `TestCheckStatus*` | status-not-in-enum + status-on-entity | 8 |
+| `TestCheckLegacyField` | Старые поля title/complexity/first_mentioned, exempt meta | 5 |
+| `TestCheckLowercaseTags` | Регистр тегов, LoRA, отсутствие тегов | 4 |
+| `TestCheckInlineTags` | inline vs block YAML, пустой inline — разрешён | 3 |
+| `TestCheckFolderTypeMismatch` | Папка vs type:, meta/root exempt | 4 |
+| `TestCheckRawLinkWithExtension` | .md extension, compound .docx.md — не флагируем | 4 |
+| `TestCheckRawRefInBody` | Ссылки на raw/ в теле, meta exempt | 3 |
+| `TestCheckDeadLink` | Живые/мёртвые ссылки, fenced code, inline code, dedup, frontmatter | 8 |
+| `TestCheckOrphan` | Orphan, meta/root exempt, frontmatter related считается | 5 |
+| `TestCheckAsymmetricRelated` | Симметрия, dedup пар, dead-link не дублируется | 4 |
+| `TestCheckDanglingDomainRef` | Существующий/несуществующий домен | 3 |
+| `TestCheckEmptySection` | Пустые секции, HTML-комментарий не контент, fenced code = контент | 6 |
+| `TestCheckStaleIndexEntry` | Filesystem (monkeypatch): устаревшие/живые/отсутствующие записи | 3 |
+| `TestCheckMissingIndexEntry` | Filesystem: незаиндексированные страницы, meta exempt | 3 |
+| `TestCheckBinarySourceOutsideFormats` | Filesystem: PDF/audio вне formats/, meta/ exempt | 5 |
+| `TestParseIndexTables` | Парсинг таблиц index.md, separator row, неизвестные секции | 3 |
+| `TestComputeWikiHash` | Детерминизм, разный контент, порядко-независимость, пустой список | 4 |
+
+**Ключевые архитектурные решения:**
+- Все check-функции принимают `list[Page]` — тесты строят Page объекты напрямую, без файловой системы (13 из 16 check'ов)
+- Три FS-зависимых check'а: `monkeypatch` модульных констант (`WIKI_ROOT`, `RAW_ROOT`) + `tmp_path`
+- Два теста `check_orphan` исходно провалились: orphan-чек правильно флагирует страницы без входящих ссылок. Тест скорректирован: проверяем что конкретная страница B (на которую ссылаются) не orphan, а не что orphan'ов нет вообще
+
+**Запуск:** `python3 -m pytest bin/tests/`
+
+### Этап 11: Embedding-сервис + Layer 1.5 lint
+
+**Что введено:**
+
+- **`bin/embed.py`** (~430 строк) — embedding service:
+  - `Embedder` (abstract) + `OllamaEmbedder` (urllib, без зависимостей)
+  - Auto-fallback `/api/embed` → `/api/embeddings` при HTTP 404 (legacy Ollama)
+  - `EmbedIndex` — JSON-storage с hash-based invalidation
+  - `update_index()` — пересчёт только изменившихся, прунинг устаревших, инвалидация при смене модели
+  - `strip_frontmatter()` перед хешированием — изменения только во frontmatter (например status flip) не триггерят пересчёт эмбеддинга
+  - `EmbedderUnavailable` — отдельный exception для graceful degradation
+  - CLI: `update / query / similar / stats`
+  - Configuration через env: `EMBED_HOST`, `EMBED_MODEL`, `EMBED_TIMEOUT`
+
+- **Two-tier storage:**
+  ```
+  wiki/meta/embeddings.json    — wiki page embeddings
+  raw/meta/embeddings.json     — raw source embeddings (для synthesis-drift)
+  ```
+
+- **`bin/lint.py` Layer 1.5** — две новые проверки через флаг `--approx`:
+  - `similar-but-unlinked` — пары страниц с высоким cosine, без wikilink между ними. Threshold = `max(percentile(sims, p), 0.6)`.
+  - `synthesis-drift` — wiki-страницы, чей embedding сильно отклонился от центроида эмбеддингов источников. Threshold = `max(mean + 1.5×std, 0.1)`. Early exit при std==0.
+
+- **Безопасность по умолчанию:** Layer 1.5 — pure consumer векторов. Ollama не нужна для запуска lint, только pre-computed `embeddings.json`. Если файлы пустые/отсутствуют — graceful degradation с сообщением «run embed.py update».
+
+**Тесты:** +63 для embed.py + 18 для Layer 1.5 = **180/180 pass**
+
+**Тестирование выявило реальный баг:** на «плоских» распределениях (все cosine ≈ 0 или все drifts равны) percentile/std-based порог обнулялся → флагировались все пары. Решено через safety floor (`_MIN_SIMILARITY_FLOOR=0.6`, `_MIN_DRIFT_FLOOR=0.1`) + early return при `std == 0`. Хороший пример того, ради чего тесты пишутся.
+
+**Модель:** FRIDA (Russian-optimized embeddings) через Ollama. Для русскоязычной wiki даёт качество существенно выше чем multilingual MiniLM.
+
+**Use cases (реализованные через Layer 1.5):**
+1. Missing links — закрывает семантический пробел в lint
+2. Synthesis-drift — детектор галлюцинаций при ingest
+
+**Use cases (открытые на будущее):**
+3. Auto `related:` — top-K кандидатов при ingest
+4. Knowledge map — UMAP-проекция в PNG
+5. Hybrid query — embeddings как pre-filter для больших wiki
+
 ### Тематические милстоуны
 
 - **af27f4d → 4fadd02:** Скелет проекта и концепция "режимов"
@@ -915,6 +1115,9 @@ Core: bases (включён), canvas, daily-notes, audio-recorder, sync.
 - **8af7b40 → 96b208b:** Отказ от режимов, универсальная плоская структура
 - **565376c → 96b208b:** Упрощение схемы под реальный опыт первого ingest
 - **a26a735 → 0f39010:** Архитектурно чистый lint-цикл с разделением read/write
+- **transcribe branch:** Полный pipeline конвертации бинарных источников (PDF/DOCX/audio/video)
+- **tests:** 97 unit-тестов для bin/lint.py, 97/97 pass
+- **embeddings branch:** bin/embed.py (FRIDA/Ollama) + Layer 1.5 lint (similar-but-unlinked, synthesis-drift), 180/180 tests pass
 
 ---
 
@@ -1046,7 +1249,9 @@ Andrej Karpathy. **LLM Wiki gist** (2026). https://gist.github.com/karpathy/442a
 | Cross-project переиспользование | да (path-reference из CLAUDE.md) | Samurai — multi-CLI в одном репо |
 | Atom layer (immutable claims) | нет | cablate — есть |
 | Provenance-метки на claim | нет | Ar9av — есть |
-| Two-layer lint | частично (LLM-only) | cablate — есть полностью |
+| Two-layer lint | да (16 программных + LLM-layer) | cablate — есть |
+| Embedding-based lint (missing-links + synthesis-drift) | да (Layer 1.5, --approx) | ни у кого |
+| Synthesis-drift detection (детектор галлюцинаций) | да | ни у кого |
 | Typed graph edges | нет (плоские wikilinks) | OmegaWiki — есть |
 
 ### 15.4 Соседние Obsidian-плагины
@@ -1076,15 +1281,24 @@ Andrej Karpathy. **LLM Wiki gist** (2026). https://gist.github.com/karpathy/442a
 
 - **Bian et al. — LLM-empowered Knowledge Graph Construction: A Survey** (arXiv:2510.20345, October 2025). Делит подходы на schema-based (попадаем сюда — строгий enum типов) и schema-free. Упоминает AutoSchemaKG (real-time schema evolution), Ontogenia (Metacognitive Prompting для self-reflection во время synthesis — теоретическое обоснование нашей Phase 8 lint review), ATLAS (900M nodes из 50M docs).
 
-### 15.7 Идеи к заимствованию (отложены)
+### 15.7 Идеи к заимствованию
 
-Из обзора выделены пять идей, которые стоит рассмотреть для расширения проекта:
+**Реализованные:**
+
+- **Two-layer lint** (от cablate) — реализовано: `bin/lint.py` (16 детерминистических проверок) + LLM-layer (`.claude/skills/lint/SKILL.md`). Расширено до **three-layer**: добавлен Layer 1.5 на основе эмбеддингов (`similar-but-unlinked` и `synthesis-drift` — последний уникален, ни у одного из конкурентов не встречается).
+
+**Отложены на будущее:**
 
 1. **Atom layer** (от cablate) — immutable single-claim файлы под `atoms/`, wiki-страницы перекомпилируются.
-2. **Two-layer lint** (от cablate) — детерминированный shell + LLM-layer. Совпадает с планируемой "программной реализацией lint".
-3. **Provenance-метки** (от Ar9av) — `^[extracted]`/`^[inferred]`/`^[ambiguous]` рядом с claim'ами.
-4. **Typed graph edges** (от OmegaWiki) — `graph/edges.jsonl` с relation-типами параллельно wikilinks.
-5. **Contradiction flags на ingest** (от SamurAIGPT) — при синтезе явное сравнение с существующими claims, создание `wiki/contradictions/<topic>.md`.
+2. **Provenance-метки** (от Ar9av) — `^[extracted]`/`^[inferred]`/`^[ambiguous]` рядом с claim'ами.
+3. **Typed graph edges** (от OmegaWiki) — `graph/edges.jsonl` с relation-типами параллельно wikilinks.
+4. **Contradiction flags на ingest** (от SamurAIGPT) — при синтезе явное сравнение с существующими claims, создание `wiki/contradictions/<topic>.md`.
+
+**Embedding use cases (отложены, см. Этап 11):**
+
+5. **Auto `related:` suggestions** при ingest — top-K кандидатов по cosine similarity.
+6. **Knowledge map** — UMAP-проекция wiki в 2D с цветом по domain. Хорошая иллюстрация для ВКР.
+7. **Hybrid query** — embeddings как pre-filter для query когда index >10k слов.
 
 ---
 
