@@ -95,6 +95,12 @@ class TestColorHelpers:
     def test_hex_to_rgb_uppercase(self):
         assert hex_to_rgb("#FFFFFF") == (255, 255, 255)
 
+    def test_hex_to_rgb_handles_rgb_function(self):
+        # Plotly's qualitative.Bold etc. return colors like "rgb(127, 60, 141)"
+        assert hex_to_rgb("rgb(127, 60, 141)") == (127, 60, 141)
+        assert hex_to_rgb("rgb(0,0,0)") == (0, 0, 0)
+        assert hex_to_rgb("rgb(255, 255, 255)") == (255, 255, 255)
+
     def test_rgb_to_hex_roundtrip(self):
         for h in ["#000000", "#ff8800", "#abcdef"]:
             assert rgb_to_hex(hex_to_rgb(h)) == h
@@ -390,36 +396,47 @@ class TestRenderArtifactPage:
 
     def test_frontmatter_present(self):
         page = render_artifact_page(
-            self._stub_stats(), "kmap.png", "kmap.html", "2026-05-01T10:00:00",
+            self._stub_stats(), "kmap.html", "2026-05-01T10:00:00",
         )
         assert page.startswith("---\n")
         assert "type: meta" in page
         assert "generated: 2026-05-01T10:00:00" in page
         assert "pages_total: 7" in page
 
-    def test_image_embed_present(self):
+    def test_iframe_embed_present(self):
+        # Page should embed HTML interactive viz via iframe (not PNG)
         page = render_artifact_page(
-            self._stub_stats(), "kmap.png", "kmap.html", "2026-05-01T10:00:00",
+            self._stub_stats(), "kmap.html", "2026-05-01T10:00:00",
         )
-        assert "![[kmap.png]]" in page
-
-    def test_html_path_referenced(self):
-        page = render_artifact_page(
-            self._stub_stats(), "kmap.png", "kmap.html", "2026-05-01T10:00:00",
-        )
+        assert "<iframe" in page
         assert "kmap.html" in page
+
+    def test_iframe_uses_relative_path(self):
+        # Path from wiki/meta/kn-maps/X.md to _attachments/Y.html is ../../../
+        page = render_artifact_page(
+            self._stub_stats(), "kmap.html", "2026-05-01T10:00:00",
+        )
+        assert "../../../_attachments/kmap.html" in page
 
     def test_all_sections_present(self):
         page = render_artifact_page(
-            self._stub_stats(), "kmap.png", "kmap.html", "2026-05-01T10:00:00",
+            self._stub_stats(), "kmap.html", "2026-05-01T10:00:00",
         )
-        for section in ("## Counts", "## Connectivity",
-                        "## Semantic structure", "## Domain coverage"):
-            assert section in page
+        # Russian section headings
+        for section in (
+            "## Интерактивная карта",
+            "## Как читать",
+            "## Счётчики",
+            "## Домены",
+            "## Связность",
+            "## Семантическая структура",
+            "## Связность доменов",
+        ):
+            assert section in page, f"missing section: {section}"
 
     def test_tightest_pair_rendered(self):
         page = render_artifact_page(
-            self._stub_stats(), "kmap.png", "kmap.html", "2026-05-01T10:00:00",
+            self._stub_stats(), "kmap.html", "2026-05-01T10:00:00",
         )
         assert "[[RLHF]]" in page
         assert "[[PPO]]" in page
@@ -427,12 +444,23 @@ class TestRenderArtifactPage:
 
     def test_orphan_count_rendered(self):
         page = render_artifact_page(
-            self._stub_stats(), "kmap.png", "kmap.html", "2026-05-01T10:00:00",
+            self._stub_stats(), "kmap.html", "2026-05-01T10:00:00",
         )
-        assert "Orphan pages: 1" in page
+        # Russian wording: "Страниц-сирот | 1"
+        assert "Страниц-сирот" in page
 
     def test_no_domain_coverage_when_empty(self):
         stats = self._stub_stats()
         stats["domain_avg_cosine"] = {}
-        page = render_artifact_page(stats, "k.png", "k.html", "2026-05-01T10:00:00")
-        assert "## Domain coverage" not in page
+        page = render_artifact_page(stats, "k.html", "2026-05-01T10:00:00")
+        # Domain coverage section omitted when no per-domain cosine data
+        assert "## Связность доменов" not in page
+
+    def test_tables_used_for_stats(self):
+        # Stats should be in markdown tables, not bullet lists
+        page = render_artifact_page(
+            self._stub_stats(), "kmap.html", "2026-05-01T10:00:00",
+        )
+        # Each stats section should have a table (markdown table syntax)
+        assert "| Тип | Количество |" in page
+        assert "| Метрика | Значение |" in page
