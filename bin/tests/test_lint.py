@@ -896,6 +896,38 @@ class TestCheckSimilarButUnlinked:
         issues = list(check_similar_but_unlinked([a, b], idx, threshold_percentile=50))
         assert len(issues) <= 1
 
+    def test_meta_pages_excluded(self):
+        # cache.md and summary.md naturally have similar embeddings (both
+        # describe wiki state) but they're infrastructure — must not be flagged.
+        cache = make_page(folder="", name="cache", fm_yaml="type: meta")
+        summary = make_page(folder="", name="summary", fm_yaml="type: meta")
+        # Add a content page so threshold is meaningful
+        idea = make_page(name="Idea", fm_yaml="type: idea")
+        idx = _make_idx([
+            ("cache", [1.0, 0.0]),
+            ("summary", [0.99, 0.01]),
+            ("Idea", [0.0, 1.0]),
+        ])
+        issues = list(check_similar_but_unlinked(
+            [cache, summary, idea], idx, threshold_percentile=50,
+        ))
+        assert len(issues) == 0
+
+    def test_meta_folder_excluded(self):
+        # Pages in wiki/meta/ (lint reports, base files etc.) also excluded
+        m1 = make_page(folder="meta", name="dashboard", fm_yaml="type: meta")
+        m2 = make_page(folder="meta", name="report", fm_yaml="type: meta")
+        idea = make_page(name="X", fm_yaml="type: idea")
+        idx = _make_idx([
+            ("dashboard", [1.0, 0.0]),
+            ("report", [0.99, 0.01]),
+            ("X", [0.0, 1.0]),
+        ])
+        issues = list(check_similar_but_unlinked(
+            [m1, m2, idea], idx, threshold_percentile=50,
+        ))
+        assert len(issues) == 0
+
 
 class TestCheckSynthesisDrift:
     def test_low_drift_not_flagged(self):
