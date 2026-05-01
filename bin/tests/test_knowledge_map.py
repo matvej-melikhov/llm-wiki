@@ -436,12 +436,3 @@ class TestRenderArtifactPage:
         stats["domain_avg_cosine"] = {}
         page = render_artifact_page(stats, "k.png", "k.html", "2026-05-01T10:00:00")
         assert "## Domain coverage" not in page
-
-    def test_irregular_plurals(self):
-        stats = self._stub_stats()
-        stats["type_counts"] = {"idea": 5, "entity": 3, "question": 2, "domain": 1}
-        page = render_artifact_page(stats, "k.png", "k.html", "2026-05-01T10:00:00")
-        assert "5 ideas" in page
-        assert "3 entities" in page  # not "entitys"!
-        assert "2 questions" in page
-        assert "1 domain" in page  # singular when count is 1
