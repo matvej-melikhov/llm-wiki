@@ -186,6 +186,7 @@ Layer 2 запускается **этим скиллом** после `bin/lint.
 | `folder-type-mismatch` | страница лежит в `wiki/<X>/`, но `type:` во frontmatter не соответствует папке | `{type, where, current_type, expected_type}` |
 | `stale-index-entry` | строка в `wiki/index.md` ссылается на несуществующую страницу (была удалена/переименована) | `{type, link, section}` |
 | `non-canonical-wikilink` | wikilink использует path-prefixed форму (`[[wiki/ideas/RLHF]]`, `[[ideas/RLHF]]`) вместо канонической basename `[[RLHF]]`. raw/-ссылки не флагируются. Auto-fix сохраняет `#section\|alias` части | `{type, where, link, fix, context}` |
+| `domain-order` | `domain:` список не упорядочен от частного к общему (по числу страниц-членов в домене, ascending). Соглашение нужно для предсказуемой раскраски карты знаний и других primary-domain фич. Auto-fix сортирует. Ties (равные counts) принимаются в любом порядке | `{type, where, current: [...], expected: [...]}` |
 
 ### Ask user (ingest спрашивает решение)
 
@@ -240,6 +241,7 @@ Layer 2 запускается **этим скиллом** после `bin/lint.
 | 13.5 | Асимметричные `related:` (A→B без B→A) | ask |
 | 13.6 | Бинарный источник вне `raw/formats/` | ask |
 | 13.7 | Path-prefixed wikilinks (`[[wiki/X/Y]]` вместо `[[Y]]`) | auto-fix |
+| 13.8 | `domain:` упорядочен не от частного к общему | auto-fix |
 | 14 | Пустые секции | skip |
 | 15 | Стилистические нарушения | skip |
 | 16 | `similar-but-unlinked` (только `--approx`) | ask |

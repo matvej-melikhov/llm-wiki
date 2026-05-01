@@ -366,7 +366,7 @@ Pattern взят из референсного проекта `claude-obsidian` 
 
 **Архитектура three-layer.**
 
-**Layer 1** (детерминистический): 17 типов программных проверок без LLM — статус enum, поля схемы, регистр тегов, сироты, мёртвые ссылки, dangling-domain-ref, asymmetric-related, структура index, бинарные источники вне formats, **non-canonical-wikilink** (path-prefixed wikilinks вместо basename). Запускается за секунды.
+**Layer 1** (детерминистический): 18 типов программных проверок без LLM — статус enum, поля схемы, регистр тегов, сироты, мёртвые ссылки, dangling-domain-ref, asymmetric-related, структура index, бинарные источники вне formats, **non-canonical-wikilink** (path-prefixed wikilinks вместо basename), **domain-order** (порядок доменов от частного к общему). Запускается за секунды.
 
 **Layer 1.5** (embedding-based, опционально через `--approx`): два типа semantic-проверок на pre-computed эмбеддингах:
 - `similar-but-unlinked` — пары страниц с высоким cosine но без wikilink (missing connections в графе знания)
@@ -1320,7 +1320,7 @@ Andrej Karpathy. **LLM Wiki gist** (2026). https://gist.github.com/karpathy/442a
 | Cross-project переиспользование | да (path-reference из CLAUDE.md) | Samurai — multi-CLI в одном репо |
 | Atom layer (immutable claims) | нет | cablate — есть |
 | Provenance-метки на claim | нет | Ar9av — есть |
-| Two-layer lint | да (17 программных + LLM-layer) | cablate — есть |
+| Two-layer lint | да (18 программных + LLM-layer) | cablate — есть |
 | Embedding-based lint (missing-links + synthesis-drift) | да (Layer 1.5, --approx) | ни у кого |
 | Synthesis-drift detection (детектор галлюцинаций) | да | ни у кого |
 | Typed graph edges | нет (плоские wikilinks) | OmegaWiki — есть |
