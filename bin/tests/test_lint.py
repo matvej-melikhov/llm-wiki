@@ -29,6 +29,7 @@ from lint import (
     _normalize_wikilink_text,
     _parse_index_tables,
     _parse_yaml_subset,
+    _wikilink_to_raw_key,
     check_asymmetric_related,
     check_binary_source_outside_formats,
     check_dangling_domain_ref,
@@ -42,12 +43,18 @@ from lint import (
     check_orphan,
     check_raw_link_with_extension,
     check_raw_ref_in_body,
+    check_similar_but_unlinked,
     check_stale_index_entry,
     check_status_not_in_enum,
     check_status_on_entity,
+    check_synthesis_drift,
     compute_wiki_hash,
     parse_frontmatter,
 )
+
+# Make embed module importable in tests
+import embed as E
+from embed import EmbedIndex
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -774,3 +781,199 @@ class TestComputeWikiHash:
     def test_empty_returns_hash(self):
         h = compute_wiki_hash([])
         assert isinstance(h, str) and len(h) == 64
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Layer 1.5 — embedding-based checks
+# ────────────────────────────────────────────────────────────────────────
+
+
+class TestWikilinkToRawKey:
+    def test_simple(self):
+        assert _wikilink_to_raw_key("[[raw/RLHF]]") == "RLHF.md"
+
+    def test_subpath(self):
+        assert _wikilink_to_raw_key("[[raw/articles/foo]]") == "articles/foo.md"
+
+    def test_compound_extension_kept(self):
+        assert _wikilink_to_raw_key("[[raw/paper.docx.md]]") == "paper.docx.md"
+
+    def test_already_md(self):
+        assert _wikilink_to_raw_key("[[raw/note.md]]") == "note.md"
+
+    def test_non_raw_returns_none(self):
+        assert _wikilink_to_raw_key("[[wiki/Page]]") is None
+
+    def test_not_a_wikilink(self):
+        assert _wikilink_to_raw_key("just text") is None
+
+
+def _make_idx(pairs: list[tuple[str, list[float]]]) -> EmbedIndex:
+    """Helper: build an in-memory EmbedIndex with given (name, vec) pairs."""
+    idx = EmbedIndex(Path("/dev/null"))
+    for name, vec in pairs:
+        idx.upsert(name, f"content for {name}", vec)
+    return idx
+
+
+class TestCheckSimilarButUnlinked:
+    def test_similar_unlinked_flagged(self):
+        # A and B have nearly identical vectors; no link between them
+        a = make_page(name="A", fm_yaml="type: idea")
+        b = make_page(name="B", fm_yaml="type: idea")
+        # Add a third dissimilar page so threshold makes sense
+        c = make_page(name="C", fm_yaml="type: idea")
+        idx = _make_idx([
+            ("A", [1.0, 0.0, 0.0]),
+            ("B", [0.99, 0.01, 0.0]),
+            ("C", [0.0, 0.0, 1.0]),
+        ])
+        issues = list(check_similar_but_unlinked([a, b, c], idx, threshold_percentile=50))
+        assert len(issues) == 1
+        assert issues[0].type == "similar-but-unlinked"
+        flagged = {issues[0].payload["page_a"], issues[0].payload["page_b"]}
+        assert flagged == {a.relpath(), b.relpath()}
+
+    def test_similar_but_linked_skipped(self):
+        # A→B via body wikilink
+        a = make_page(name="A", fm_yaml="type: idea", body="See [[B]].\n")
+        b = make_page(name="B", fm_yaml="type: idea")
+        c = make_page(name="C", fm_yaml="type: idea")
+        idx = _make_idx([
+            ("A", [1.0, 0.0]),
+            ("B", [0.99, 0.01]),
+            ("C", [0.0, 1.0]),
+        ])
+        issues = list(check_similar_but_unlinked([a, b, c], idx, threshold_percentile=50))
+        assert len(issues) == 0
+
+    def test_linked_via_related_skipped(self):
+        a = make_page(name="A", fm_yaml='type: idea\nrelated:\n  - "[[B]]"')
+        b = make_page(name="B", fm_yaml="type: idea")
+        c = make_page(name="C", fm_yaml="type: idea")
+        idx = _make_idx([
+            ("A", [1.0, 0.0]),
+            ("B", [0.99, 0.01]),
+            ("C", [0.0, 1.0]),
+        ])
+        issues = list(check_similar_but_unlinked([a, b, c], idx, threshold_percentile=50))
+        assert len(issues) == 0
+
+    def test_dissimilar_pages_not_flagged(self):
+        a = make_page(name="A", fm_yaml="type: idea")
+        b = make_page(name="B", fm_yaml="type: idea")
+        idx = _make_idx([
+            ("A", [1.0, 0.0]),
+            ("B", [0.0, 1.0]),  # orthogonal
+        ])
+        issues = list(check_similar_but_unlinked([a, b], idx, threshold_percentile=99))
+        assert len(issues) == 0
+
+    def test_empty_index_returns_no_issues(self):
+        a = make_page(name="A", fm_yaml="type: idea")
+        idx = EmbedIndex(Path("/dev/null"))
+        assert list(check_similar_but_unlinked([a], idx)) == []
+
+    def test_stale_index_entry_skipped(self):
+        # Embedding for a page that no longer exists in the wiki — skip silently
+        a = make_page(name="A", fm_yaml="type: idea")
+        idx = _make_idx([
+            ("A", [1.0, 0.0]),
+            ("Deleted-Page", [0.99, 0.01]),
+        ])
+        issues = list(check_similar_but_unlinked([a], idx, threshold_percentile=50))
+        # No pair to flag — Deleted-Page isn't in pages list
+        assert len(issues) == 0
+
+    def test_pair_reported_once(self):
+        # Symmetric pair (A,B) should produce at most one issue
+        a = make_page(name="A", fm_yaml="type: idea")
+        b = make_page(name="B", fm_yaml="type: idea")
+        idx = _make_idx([
+            ("A", [1.0, 0.0]),
+            ("B", [0.99, 0.01]),
+        ])
+        issues = list(check_similar_but_unlinked([a, b], idx, threshold_percentile=50))
+        assert len(issues) <= 1
+
+
+class TestCheckSynthesisDrift:
+    def test_low_drift_not_flagged(self):
+        # Wiki page vec ~= source vec → near-zero drift, not flagged
+        page = make_page(
+            name="P",
+            fm_yaml='type: idea\nsources:\n  - "[[raw/source]]"',
+        )
+        wiki_idx = _make_idx([("P", [1.0, 0.0, 0.0])])
+        raw_idx = _make_idx([("source.md", [1.0, 0.0, 0.0])])
+        issues = list(check_synthesis_drift([page], wiki_idx, raw_idx))
+        # All drifts are zero — nothing exceeds mean+std
+        assert len(issues) == 0
+
+    def test_high_drift_outlier_flagged(self):
+        # One page drifts significantly from its source while others don't
+        good_pages = [
+            make_page(name=f"G{i}", fm_yaml=f'type: idea\nsources:\n  - "[[raw/s{i}]]"')
+            for i in range(5)
+        ]
+        drifted = make_page(
+            name="Drifted",
+            fm_yaml='type: idea\nsources:\n  - "[[raw/sD]]"',
+        )
+        wiki_pairs = [(f"G{i}", [1.0, 0.0, 0.0]) for i in range(5)]
+        raw_pairs = [(f"s{i}.md", [1.0, 0.0, 0.0]) for i in range(5)]
+        # Drifted page is orthogonal to its source
+        wiki_pairs.append(("Drifted", [0.0, 1.0, 0.0]))
+        raw_pairs.append(("sD.md", [1.0, 0.0, 0.0]))
+        wiki_idx = _make_idx(wiki_pairs)
+        raw_idx = _make_idx(raw_pairs)
+        issues = list(check_synthesis_drift(good_pages + [drifted], wiki_idx, raw_idx))
+        assert any(i.payload["where"].endswith("/Drifted.md") for i in issues)
+
+    def test_no_sources_skipped(self):
+        page = make_page(name="P", fm_yaml="type: idea")
+        wiki_idx = _make_idx([("P", [1.0, 0.0])])
+        raw_idx = _make_idx([("any.md", [0.5, 0.5])])
+        assert list(check_synthesis_drift([page], wiki_idx, raw_idx)) == []
+
+    def test_sources_not_in_raw_index_skipped(self):
+        page = make_page(
+            name="P",
+            fm_yaml='type: idea\nsources:\n  - "[[raw/missing]]"',
+        )
+        wiki_idx = _make_idx([("P", [1.0, 0.0])])
+        raw_idx = _make_idx([("other.md", [0.5, 0.5])])
+        # No raw vector for the source → skip
+        assert list(check_synthesis_drift([page], wiki_idx, raw_idx)) == []
+
+    def test_empty_indexes_return_no_issues(self):
+        page = make_page(name="P", fm_yaml="type: idea")
+        empty = EmbedIndex(Path("/dev/null"))
+        assert list(check_synthesis_drift([page], empty, empty)) == []
+
+    def test_compound_source_extension(self):
+        # [[raw/paper.docx.md]] should look up "paper.docx.md" in raw_idx
+        page = make_page(
+            name="P",
+            fm_yaml='type: idea\nsources:\n  - "[[raw/paper.docx.md]]"',
+        )
+        wiki_idx = _make_idx([("P", [1.0, 0.0])])
+        raw_idx = _make_idx([("paper.docx.md", [1.0, 0.0])])
+        # Should find the source successfully — no issue (drift is 0)
+        issues = list(check_synthesis_drift([page], wiki_idx, raw_idx))
+        assert len(issues) == 0
+
+    def test_multiple_sources_aggregated(self):
+        # Sources are averaged into a centroid before comparing
+        page = make_page(
+            name="P",
+            fm_yaml='type: idea\nsources:\n  - "[[raw/s1]]"\n  - "[[raw/s2]]"',
+        )
+        wiki_idx = _make_idx([("P", [0.5, 0.5])])  # centroid of sources
+        raw_idx = _make_idx([
+            ("s1.md", [1.0, 0.0]),
+            ("s2.md", [0.0, 1.0]),
+        ])
+        # Wiki vec equals centroid of sources → very low drift
+        issues = list(check_synthesis_drift([page], wiki_idx, raw_idx))
+        assert len(issues) == 0
