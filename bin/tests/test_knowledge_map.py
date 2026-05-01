@@ -24,6 +24,7 @@ from knowledge_map import (
     build_edges,
     collect_domains,
     compute_statistics,
+    generate_distinct_palette,
     hex_to_rgb,
     render_artifact_page,
     rgb_to_hex,
@@ -122,11 +123,30 @@ class TestColorHelpers:
         out = blend_domain_colors(["X"], {"X": "#ff0000"})
         assert out == "#ff0000"
 
-    def test_blend_two_domains_averages(self):
-        # red + blue → purple-ish
-        out = blend_domain_colors(["X", "Y"], {"X": "#ff0000", "Y": "#0000ff"})
-        # Average: (127, 0, 127) → '#7f007f' (integer division)
-        assert out == "#7f007f"
+    def test_blend_two_complementary_stays_saturated(self):
+        # HSL blending: yellow + blue lie on opposite sides of the hue
+        # wheel. RGB-averaging would yield desaturated gray. HSL hue
+        # averaging yields a between-hue (green) at the same saturation.
+        # Verify property: the blend is NOT gray (saturation > 0.3).
+        out = blend_domain_colors(
+            ["A", "B"], {"A": "#e4bb67", "B": "#6791e4"},  # ML + IR from our palette
+        )
+        import colorsys
+        r, g, b = (int(out[i:i+2], 16) / 255 for i in (1, 3, 5))
+        _, _, sat = colorsys.rgb_to_hls(r, g, b)
+        assert sat > 0.3, f"complementary blend faded to gray: {out} (S={sat:.2f})"
+
+    def test_blend_two_adjacent_hues_averages_between(self):
+        # Adjacent hues on color wheel (yellow + green) blend to yellow-green.
+        # Verify property: result hue is between the two input hues.
+        import colorsys
+        a_hex = "#e4bb67"  # 40° (yellow)
+        b_hex = "#67e47c"  # 130° (green)
+        out = blend_domain_colors(["A", "B"], {"A": a_hex, "B": b_hex})
+        r, g, b = (int(out[i:i+2], 16) / 255 for i in (1, 3, 5))
+        h_out, _, _ = colorsys.rgb_to_hls(r, g, b)
+        # Should be roughly 85° (between 40° and 130°)
+        assert 0.10 < h_out < 0.30, f"blend hue {h_out*360:.1f}° not between 40° and 130°"
 
     def test_blend_no_domains_returns_default(self):
         assert blend_domain_colors([], {}) == "#cccccc"
@@ -137,6 +157,104 @@ class TestColorHelpers:
 
     def test_blend_custom_default(self):
         assert blend_domain_colors([], {}, default="#000") == "#000"
+
+    def test_blend_preserves_saturation_for_real_palette(self):
+        # End-to-end integration: with the actual generated palette,
+        # blending any pair of complementary domains must NOT produce gray.
+        from knowledge_map import generate_distinct_palette, assign_domain_colors
+        palette = generate_distinct_palette(4)
+        d2c = assign_domain_colors(["A", "B", "C", "D"], palette)
+        domains = list(d2c.keys())
+        import colorsys
+        for i in range(len(domains)):
+            for j in range(i + 1, len(domains)):
+                blend = blend_domain_colors([domains[i], domains[j]], d2c)
+                r, g, b = (int(blend[k:k+2], 16) / 255 for k in (1, 3, 5))
+                _, _, sat = colorsys.rgb_to_hls(r, g, b)
+                assert sat > 0.25, (
+                    f"blend of {domains[i]}+{domains[j]} = {blend} "
+                    f"too desaturated (S={sat:.2f})"
+                )
+
+    def test_blend_distinct_from_any_pure_domain_color(self):
+        # For evenly-spaced palettes, midpoint hues can coincide with
+        # other domains. We compensate by darkening the blend so it
+        # doesn't visually merge with a pure-color cluster.
+        # Property: distance from blend to any pure domain color is
+        # noticeable (Euclidean RGB distance > a threshold).
+        from knowledge_map import generate_distinct_palette, assign_domain_colors
+        palette = generate_distinct_palette(4)
+        d2c = assign_domain_colors(["A", "B", "C", "D"], palette)
+        domains = list(d2c.keys())
+
+        def rgb(hex_): return tuple(int(hex_[k:k+2], 16) for k in (1, 3, 5))
+        def dist(c1, c2):
+            return sum((a - b) ** 2 for a, b in zip(rgb(c1), rgb(c2))) ** 0.5
+
+        for i in range(len(domains)):
+            for j in range(i + 1, len(domains)):
+                blend = blend_domain_colors([domains[i], domains[j]], d2c)
+                for d in domains:
+                    pure = d2c[d]
+                    if pure == blend:
+                        # Byte-equal — bad
+                        assert False, f"blend {blend} equals pure {d}={pure}"
+                    # Require ≥30 RGB-distance: not just visually different
+                    # in one channel, but globally distinct
+                    assert dist(blend, pure) > 30, (
+                        f"blend of {domains[i]}+{domains[j]} = {blend} "
+                        f"too close to pure {d} = {pure} (dist={dist(blend, pure):.1f})"
+                    )
+
+
+class TestGenerateDistinctPalette:
+    """Hue-spacing generator. Verify mathematical properties of the output,
+    not specific color values (those depend on HSL conversion roundoff)."""
+
+    def test_returns_n_colors(self):
+        for n in (1, 2, 3, 4, 8, 12):
+            assert len(generate_distinct_palette(n)) == n
+
+    def test_zero_or_negative_returns_empty(self):
+        assert generate_distinct_palette(0) == []
+        assert generate_distinct_palette(-3) == []
+
+    def test_all_outputs_are_valid_hex(self):
+        for color in generate_distinct_palette(6):
+            assert color.startswith("#") and len(color) == 7
+            int(color[1:], 16)  # raises if not hex
+
+    def test_colors_are_distinct(self):
+        # 8 evenly-spaced hues must all differ from each other
+        colors = generate_distinct_palette(8)
+        assert len(set(colors)) == 8
+
+    def test_hues_evenly_spaced(self):
+        # Convert each color back to HSL hue, verify spacing ≈ 360/n.
+        import colorsys
+        n = 6
+        colors = generate_distinct_palette(n)
+        hues = []
+        for c in colors:
+            r, g, b = (int(c[1:3], 16) / 255, int(c[3:5], 16) / 255, int(c[5:7], 16) / 255)
+            h, _, _ = colorsys.rgb_to_hls(r, g, b)
+            hues.append(h * 360)
+        # Sort, compute pairwise differences (cyclic)
+        hues.sort()
+        gaps = [hues[i + 1] - hues[i] for i in range(len(hues) - 1)]
+        gaps.append(360 - hues[-1] + hues[0])
+        expected_gap = 360 / n
+        for g in gaps:
+            assert abs(g - expected_gap) < 2.0, f"gap {g} != {expected_gap}"
+
+    def test_lightness_avoids_dark_bg_invisibility(self):
+        # All colors should have lightness >= 0.5 so they're visible on
+        # the dark dashboard background.
+        import colorsys
+        for c in generate_distinct_palette(8):
+            r, g, b = (int(c[1:3], 16) / 255, int(c[3:5], 16) / 255, int(c[5:7], 16) / 255)
+            _, lightness, _ = colorsys.rgb_to_hls(r, g, b)
+            assert lightness >= 0.5, f"{c} too dark for dark bg (L={lightness:.2f})"
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -411,12 +529,22 @@ class TestRenderArtifactPage:
         assert "<iframe" in page
         assert "kmap.html" in page
 
-    def test_iframe_uses_relative_path(self):
-        # Path from wiki/meta/kn-maps/X.md to _attachments/Y.html is ../../../
+    def test_iframe_uses_default_obsidian_url_when_no_explicit_src(self):
+        # When caller doesn't provide iframe_src, fall back to vault-relative
+        # app://obsidian.md/ form (works in some Obsidian configs).
         page = render_artifact_page(
             self._stub_stats(), "kmap.html", "2026-05-01T10:00:00",
         )
-        assert "../../../_attachments/kmap.html" in page
+        assert "app://obsidian.md/_attachments/kmap.html" in page
+
+    def test_iframe_uses_explicit_src_when_provided(self):
+        # main() passes app://local/<absolute-path> for reliable Obsidian iframe.
+        custom_src = "app://local/Users/test/vault/_attachments/kmap.html"
+        page = render_artifact_page(
+            self._stub_stats(), "kmap.html", "2026-05-01T10:00:00",
+            iframe_src=custom_src,
+        )
+        assert custom_src in page
 
     def test_all_sections_present(self):
         page = render_artifact_page(
