@@ -26,6 +26,7 @@ from lint import (
     Issue, Page,
     _expected_tag_casing,
     _extract_wikilinks,
+    _normalize_wiki_target,
     _normalize_wikilink_text,
     _parse_index_tables,
     _parse_yaml_subset,
@@ -40,6 +41,7 @@ from lint import (
     check_legacy_field,
     check_lowercase_tags,
     check_missing_index_entry,
+    check_non_canonical_wikilink,
     check_orphan,
     check_raw_link_with_extension,
     check_raw_ref_in_body,
@@ -180,6 +182,27 @@ class TestExpectedTagCasing:
 # ────────────────────────────────────────────────────────────────────────
 
 
+class TestNormalizeWikiTarget:
+    def test_basename_unchanged(self):
+        assert _normalize_wiki_target("RLHF") == "RLHF"
+
+    def test_strips_wiki_prefix(self):
+        assert _normalize_wiki_target("wiki/ideas/RLHF") == "RLHF"
+
+    def test_strips_subfolder_prefix(self):
+        assert _normalize_wiki_target("ideas/RLHF") == "RLHF"
+
+    def test_raw_path_preserved(self):
+        # raw/ has legitimate folder structure — never normalize
+        assert _normalize_wiki_target("raw/articles/foo") == "raw/articles/foo"
+
+    def test_raw_at_root_preserved(self):
+        assert _normalize_wiki_target("raw/RLHF") == "raw/RLHF"
+
+    def test_deep_path(self):
+        assert _normalize_wiki_target("a/b/c/Page") == "Page"
+
+
 class TestExtractWikilinks:
     def test_basic_link(self):
         assert _extract_wikilinks("See [[RLHF]] for details") == ["RLHF"]
@@ -214,6 +237,165 @@ class TestExtractWikilinks:
     def test_multiple_links(self):
         links = _extract_wikilinks("[[A]] and [[B]] and [[C]]")
         assert set(links) == {"A", "B", "C"}
+
+    def test_path_prefixed_normalized(self):
+        # [[wiki/ideas/RLHF]] should normalize to "RLHF" in extracted list
+        links = _extract_wikilinks("Reference: [[wiki/ideas/RLHF]] elsewhere")
+        assert links == ["RLHF"]
+
+    def test_raw_path_preserved(self):
+        # raw/ targets keep their full path
+        links = _extract_wikilinks("Source: [[raw/articles/foo]]")
+        assert links == ["raw/articles/foo"]
+
+
+# ────────────────────────────────────────────────────────────────────────
+# check_non_canonical_wikilink
+# ────────────────────────────────────────────────────────────────────────
+
+
+class TestCheckNonCanonicalWikilink:
+    """All tests pass index_path=Path('/dev/null/missing') to isolate from
+    the live wiki/index.md. Tests that specifically test index parsing
+    construct their own index file via tmp_path."""
+
+    NO_INDEX = Path("/dev/null/missing")
+
+    def test_canonical_body_link_ok(self):
+        p = make_page(fm_yaml="type: idea", body="See [[RLHF]] for details.\n")
+        assert types_of(check_non_canonical_wikilink([p], self.NO_INDEX)) == []
+
+    def test_path_prefixed_body_link_flagged(self):
+        p = make_page(
+            name="A", fm_yaml="type: idea",
+            body="See [[wiki/ideas/RLHF]] for details.\n",
+        )
+        issues = issues_of(check_non_canonical_wikilink([p], self.NO_INDEX))
+        assert len(issues) == 1
+        assert issues[0].type == "non-canonical-wikilink"
+        assert issues[0].payload["link"] == "[[wiki/ideas/RLHF]]"
+        assert issues[0].payload["fix"] == "[[RLHF]]"
+
+    def test_raw_paths_not_flagged(self):
+        # raw/ targets legitimately use path structure
+        p = make_page(
+            fm_yaml='type: idea\nsources:\n  - "[[raw/articles/foo]]"',
+            body="From [[raw/articles/foo]].\n",
+        )
+        # Note: raw-ref-in-body fires here, but non-canonical-wikilink should NOT
+        assert types_of(check_non_canonical_wikilink([p], self.NO_INDEX)) == []
+
+    def test_frontmatter_related_flagged(self):
+        p = make_page(
+            fm_yaml='type: idea\nrelated:\n  - "[[wiki/ideas/PPO]]"',
+        )
+        issues = issues_of(check_non_canonical_wikilink([p], self.NO_INDEX))
+        assert len(issues) == 1
+        assert issues[0].payload["context"] == "frontmatter related"
+        assert issues[0].payload["fix"] == "[[PPO]]"
+
+    def test_frontmatter_domain_flagged(self):
+        p = make_page(
+            fm_yaml='type: idea\ndomain:\n  - "[[domains/Machine Learning]]"',
+        )
+        issues = issues_of(check_non_canonical_wikilink([p], self.NO_INDEX))
+        assert any("domain" in i.payload["context"] for i in issues)
+
+    def test_meta_pages_exempt(self):
+        # Meta pages may legitimately mention path-prefixed links in operation logs
+        p = make_page(
+            folder="meta", fm_yaml="type: meta",
+            body="Ingested [[wiki/ideas/RLHF]].\n",
+        )
+        assert types_of(check_non_canonical_wikilink([p], self.NO_INDEX)) == []
+
+    def test_fenced_code_skipped(self):
+        # Code examples may show path-prefixed links — don't flag them
+        body = "```\nUse [[wiki/ideas/RLHF]] syntax\n```\n"
+        p = make_page(fm_yaml="type: idea", body=body)
+        assert types_of(check_non_canonical_wikilink([p], self.NO_INDEX)) == []
+
+    def test_index_path_prefixed_flagged(self, tmp_path):
+        index = tmp_path / "index.md"
+        index.write_text(
+            "## Ideas\n"
+            "| [[wiki/ideas/RLHF]] | summary |\n"
+            "| [[Canonical]] | other |\n"
+        )
+        p = make_page(name="RLHF", fm_yaml="type: idea")
+        c = make_page(name="Canonical", fm_yaml="type: idea")
+        issues = issues_of(check_non_canonical_wikilink([p, c], index))
+        # Only the path-prefixed entry in index flagged
+        index_issues = [i for i in issues if i.payload["where"] == "wiki/index.md"]
+        assert len(index_issues) == 1
+        assert index_issues[0].payload["fix"] == "[[RLHF]]"
+
+    def test_dedup_within_page(self):
+        # Same link appearing twice in body → reported once
+        body = "Some [[wiki/ideas/RLHF]]. Other [[wiki/ideas/RLHF]] mention.\n"
+        p = make_page(fm_yaml="type: idea", body=body)
+        issues = issues_of(check_non_canonical_wikilink([p], self.NO_INDEX))
+        assert len(issues) == 1
+
+    def test_anchor_preserved_in_fix(self):
+        body = "See [[wiki/ideas/RLHF#Section Title]] there.\n"
+        p = make_page(fm_yaml="type: idea", body=body)
+        issues = issues_of(check_non_canonical_wikilink([p], self.NO_INDEX))
+        assert len(issues) == 1
+        assert issues[0].payload["fix"] == "[[RLHF#Section Title]]"
+
+    def test_alias_preserved_in_fix(self):
+        body = "See [[wiki/ideas/RLHF|кастомный текст]] there.\n"
+        p = make_page(fm_yaml="type: idea", body=body)
+        issues = issues_of(check_non_canonical_wikilink([p], self.NO_INDEX))
+        assert len(issues) == 1
+        assert issues[0].payload["fix"] == "[[RLHF|кастомный текст]]"
+
+    def test_anchor_and_alias_preserved(self):
+        body = "See [[wiki/ideas/RLHF#Section|alias]] there.\n"
+        p = make_page(fm_yaml="type: idea", body=body)
+        issues = issues_of(check_non_canonical_wikilink([p], self.NO_INDEX))
+        assert len(issues) == 1
+        assert issues[0].payload["fix"] == "[[RLHF#Section|alias]]"
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Integration: normalization eliminates false dead-links / index issues
+# ────────────────────────────────────────────────────────────────────────
+
+
+class TestNormalizationIntegration:
+    """Path-prefixed wikilinks should NOT trigger false positives in
+    other checks once normalization is applied."""
+
+    def test_path_prefixed_does_not_cause_dead_link(self):
+        # Page A links to B via path-prefixed form. Both pages exist.
+        # check_dead_link should resolve [[wiki/ideas/B]] → "B" → in by_name.
+        a = make_page(name="A", fm_yaml="type: idea", body="See [[wiki/ideas/B]].\n")
+        b = make_page(name="B", fm_yaml="type: idea")
+        assert types_of(check_dead_link([a, b])) == []
+
+    def test_path_prefixed_not_stale_index(self, tmp_path, monkeypatch):
+        # Index has [[wiki/ideas/X]], page X exists → not stale
+        monkeypatch.setattr(L, "WIKI_ROOT", tmp_path)
+        index = tmp_path / "index.md"
+        index.write_text("## Ideas\n| [[wiki/ideas/X]] | summary |\n")
+        p = make_page(name="X", fm_yaml="type: idea")
+        assert types_of(check_stale_index_entry([p])) == []
+
+    def test_path_prefixed_not_missing_index(self, tmp_path, monkeypatch):
+        # Index has [[wiki/ideas/X]]; page X exists → not flagged as missing
+        monkeypatch.setattr(L, "WIKI_ROOT", tmp_path)
+        index = tmp_path / "index.md"
+        index.write_text("## Ideas\n| [[wiki/ideas/X]] | summary |\n")
+        p = make_page(name="X", fm_yaml="type: idea")
+        assert types_of(check_missing_index_entry([p])) == []
+
+    def test_path_prefixed_in_related_symmetric(self):
+        # A.related has [[wiki/ideas/B]]; B.related has [[A]]. Should be symmetric.
+        a = make_page(name="A", fm_yaml='type: idea\nrelated:\n  - "[[wiki/ideas/B]]"')
+        b = make_page(name="B", fm_yaml='type: idea\nrelated:\n  - "[[A]]"')
+        assert types_of(check_asymmetric_related([a, b])) == []
 
 
 # ────────────────────────────────────────────────────────────────────────
