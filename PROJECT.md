@@ -1126,7 +1126,30 @@ Core: bases (включён), canvas, daily-notes, audio-recorder, sync.
 
 **Use cases (открытые на будущее):**
 3. Auto `related:` — top-K кандидатов при ingest
-4. Knowledge map — UMAP-проекция в PNG
+
+**Knowledge map (Этап 12).** UMAP-проекция всей wiki в 2D через `bin/knowledge_map.py`. Цвет точки = domain (multi-domain → RGB-blend), размер = тип страницы (domain — крупнее, как «хаб»). Edges = wikilinks (полупрозрачные). Hover показывает frontmatter + связи. Три артефакта на каждый прогон:
+
+```
+_attachments/knowledge-map-YYYY-MM-DD.html   # interactive Plotly viz
+_attachments/knowledge-map-YYYY-MM-DD.png    # static export через kaleido
+wiki/meta/knowledge-map-YYYY-MM-DD.md        # markdown с embed + статистикой
+```
+
+`.md` версионирована (по дате) — successive runs формируют историю эволюции wiki, как `lint-report-*`. Контент:
+- Counts (по типам, по доменам, unassigned)
+- Connectivity (валидные wikilinks, orphans, most connected, max inbound)
+- Semantic structure (popairwise cosine — median/p75/p95/max, tightest pair, most isolated)
+- Domain coverage (avg internal cosine на домен — индикатор связности кластера)
+
+Для ВКР это **самая зрелищная иллюстрация** — позволяет наглядно показать структуру знания и сравнивать срезы во времени.
+
+Зависимости (тяжёлые, ~80MB): `umap-learn`, `plotly`, `kaleido` — пинуем `kaleido==0.2.1` так как 1.0+ имеет breaking API.
+
+**Tests (+46):** color helpers (hex roundtrip, blending edge cases, palette wraparound, default fallback), build_dataset (meta filter, domain extraction with normalization, vec attachment, link extraction, inbound computation), build_edges (dedup, self-loop drop, body+fm combined), compute_statistics (counts, orphans, most-connected, tightest pair, most-isolated, domain coverage), render_artifact_page (frontmatter, embed, sections, irregular plurals).
+
+**Live на нашей wiki (51 content pages):** три чёткие визуальные кластера — ML/RL (синий), Knowledge Management (красный), Information Retrieval (зелёный). RLHF — самый связанный (15 inbound). Tightest pair: `Karpathy 2026 — LLM Wiki` ↔ `LLM Wiki Pattern` (cosine 0.924) — тот же сигнал что в `contradiction_candidates`. ML — самый размазанный домен (avg cosine 0.485, vs 0.64 у узких).
+
+**Use cases (продолжение):**
 5. Hybrid query — embeddings как pre-filter для больших wiki
 
 **Live-прогон на реальной wiki (qwen/qwen3-embedding-8b через OpenRouter, dim=4096):**
@@ -1147,6 +1170,7 @@ Core: bases (включён), canvas, daily-notes, audio-recorder, sync.
 - **transcribe branch:** Полный pipeline конвертации бинарных источников (PDF/DOCX/audio/video)
 - **tests:** 97 unit-тестов для bin/lint.py, 97/97 pass
 - **embeddings branch:** bin/embed.py (FRIDA/Ollama) + Layer 1.5 lint (similar-but-unlinked, synthesis-drift), 180/180 tests pass
+- **knowledge map:** bin/knowledge_map.py (UMAP + plotly), versioned snapshots с stats. Закрывает все 5 идей из изначального embedding-плана
 
 ---
 
