@@ -190,7 +190,7 @@ domain:
    ```
 4. Если домены разнородные и иерархии нет (например, `[Machine Learning, Knowledge Management]` — параллельные) — пропустить без issue
 
-Категория: **ask** — пользователь подтверждает перестановку. В большинстве случаев очевидных пар (RL+ML, IR+ML и т.п.) подтверждение мгновенное. Для неочевидных случаев — суждение пользователя.
+Категория: **auto-fix** — ingest применяет переупорядочивание молча, без подтверждения. Reasoning заносится в issue для возможного аудита. Если агент не уверен в иерархии (например, для параллельных доменов вроде ML+KM) — issue не создаётся вовсе, страница не трогается.
 
 ---
 
@@ -215,6 +215,7 @@ domain:
 | `folder-type-mismatch` | страница лежит в `wiki/<X>/`, но `type:` во frontmatter не соответствует папке | `{type, where, current_type, expected_type}` |
 | `stale-index-entry` | строка в `wiki/index.md` ссылается на несуществующую страницу (была удалена/переименована) | `{type, link, section}` |
 | `non-canonical-wikilink` | wikilink использует path-prefixed форму (`[[wiki/ideas/RLHF]]`, `[[ideas/RLHF]]`) вместо канонической basename `[[RLHF]]`. raw/-ссылки не флагируются. Auto-fix сохраняет `#section\|alias` части | `{type, where, link, fix, context}` |
+| `domain-order` | LLM-проверка (Layer 2): `domain:` не упорядочен от частного к общему. Агент использует семантическое знание о соотношении доменов (`RL ⊂ ML`). Auto-fix переписывает блок в порядке из `expected`. Параллельные домены (без иерархии) агент пропускает | `{type, where, current, expected, reasoning}` |
 
 ### Ask user (ingest спрашивает решение)
 
@@ -233,7 +234,6 @@ domain:
 | `binary-source-outside-formats` | бинарный файл (.pdf/.docx/audio) лежит в `raw/` вне папки `raw/formats/` | `{type, where, suggested}` |
 | `similar-but-unlinked` | две страницы семантически близки (cosine выше порога), но wikilink между ними отсутствует. Только в режиме `--approx` | `{type, page_a, page_b, similarity, threshold}` |
 | `synthesis-drift` | wiki-страница семантически далеко ушла от центроида эмбеддингов своих источников. Сигнал о возможной галлюцинации синтеза. Только в режиме `--approx` | `{type, where, drift, threshold}` |
-| `domain-order` | страница имеет несколько `domain:`, и они **не упорядочены от частного к общему**. Это LLM-проверка (Layer 2): агент использует семантическое знание о соотношении доменов (например, `RL ⊂ ML`, поэтому RL должен идти раньше ML). Не делается через скриптовые эвристики (счётчики member-pages ненадёжны для молодой wiki). См. описание в Layer 2 ниже | `{type, where, current, expected, reasoning}` |
 
 ### Skip (только записываем, не спрашиваем)
 
