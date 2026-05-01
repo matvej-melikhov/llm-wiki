@@ -413,6 +413,25 @@ def discover_wiki_pages() -> list[tuple[str, str]]:
     return pages
 
 
+def wiki_page_paths() -> dict[str, tuple[str, str]]:
+    """Map basename → (full_path, folder).
+
+    Used by CLI commands to filter results by folder (skip meta/root files)
+    and emit full paths so the caller can Read pages directly.
+    folder == "" means wiki root file (cache, summary, log, index).
+    """
+    result: dict[str, tuple[str, str]] = {}
+    if not WIKI_ROOT.is_dir():
+        return result
+    for md in sorted(WIKI_ROOT.rglob("*.md")):
+        if md.parent.name == "meta" and md.name.startswith("lint-report-"):
+            continue
+        rel = md.relative_to(WIKI_ROOT)
+        folder = rel.parts[0] if len(rel.parts) > 1 else ""
+        result[md.stem] = (md.as_posix(), folder)
+    return result
+
+
 def discover_raw_pages() -> list[tuple[str, str]]:
     """Walk raw/ → list of (relpath, full text). Excludes raw/formats/ and raw/meta/."""
     pages: list[tuple[str, str]] = []
@@ -522,6 +541,33 @@ def cmd_update(_args) -> int:
     return 0
 
 
+def _filter_and_format_results(
+    results: list[tuple[str, float]],
+    paths: dict[str, tuple[str, str]],
+    k: int,
+    include_meta: bool = False,
+) -> list[tuple[str, float, str]]:
+    """Filter top_k results by content folder, attach full paths.
+
+    Returns list of (name, similarity, full_path) tuples, length <= k.
+    Stale embeddings (page no longer exists) are dropped silently.
+    Meta pages and wiki root files (cache/summary/log/index) are excluded
+    unless include_meta=True.
+    """
+    out: list[tuple[str, float, str]] = []
+    for name, sim in results:
+        info = paths.get(name)
+        if info is None:
+            continue  # stale embedding — page deleted
+        path, folder = info
+        if not include_meta and folder in ("", "meta"):
+            continue
+        out.append((name, sim, path))
+        if len(out) >= k:
+            break
+    return out
+
+
 def cmd_query(args) -> int:
     embedder = _make_default_embedder()
     wiki_idx = EmbedIndex(WIKI_EMBED_PATH)
@@ -529,13 +575,17 @@ def cmd_query(args) -> int:
     if not wiki_idx.items:
         print("wiki index is empty. run: embed.py update", file=sys.stderr)
         return 1
+    paths = wiki_page_paths()
     try:
         q_vec = embedder.embed(args.text)
     except EmbedderUnavailable as e:
         print(f"embedder unavailable: {e}", file=sys.stderr)
         return 2
-    for name, sim in wiki_idx.top_k(q_vec, k=args.k):
-        print(f"  {sim:+.3f}  {name}")
+    # Get more candidates than k to allow for filtering
+    raw = wiki_idx.top_k(q_vec, k=args.k * 3 if not args.all else args.k)
+    filtered = _filter_and_format_results(raw, paths, args.k, include_meta=args.all)
+    for name, sim, path in filtered:
+        print(f"  {sim:+.3f}  {path}")
     return 0
 
 
@@ -547,8 +597,15 @@ def cmd_similar(args) -> int:
         print(f"page not in index: {args.page}", file=sys.stderr)
         print("  hint: run 'embed.py update' first", file=sys.stderr)
         return 1
-    for name, sim in wiki_idx.top_k(vec, k=args.k, exclude={args.page}):
-        print(f"  {sim:+.3f}  {name}")
+    paths = wiki_page_paths()
+    raw = wiki_idx.top_k(
+        vec,
+        k=args.k * 3 if not args.all else args.k,
+        exclude={args.page},
+    )
+    filtered = _filter_and_format_results(raw, paths, args.k, include_meta=args.all)
+    for name, sim, path in filtered:
+        print(f"  {sim:+.3f}  {path}")
     return 0
 
 
@@ -587,11 +644,15 @@ def main() -> int:
     p_query = sub.add_parser("query", help="find pages similar to query text")
     p_query.add_argument("text")
     p_query.add_argument("-k", type=int, default=10)
+    p_query.add_argument("--all", action="store_true",
+                         help="include meta pages and wiki root files in results")
     p_query.set_defaults(func=cmd_query)
 
     p_similar = sub.add_parser("similar", help="find pages similar to a wiki page")
     p_similar.add_argument("page")
     p_similar.add_argument("-k", type=int, default=10)
+    p_similar.add_argument("--all", action="store_true",
+                           help="include meta pages and wiki root files in results")
     p_similar.set_defaults(func=cmd_similar)
 
     p_stats = sub.add_parser("stats", help="similarity distribution (for threshold calibration)")

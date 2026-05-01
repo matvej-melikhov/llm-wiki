@@ -34,6 +34,7 @@ from embed import (
     EmbedRecord,
     OllamaEmbedder,
     OpenAIEmbedder,
+    _filter_and_format_results,
     content_hash,
     cosine,
     discover_raw_pages,
@@ -42,6 +43,7 @@ from embed import (
     strip_frontmatter,
     update_index,
     vec_mean,
+    wiki_page_paths,
 )
 
 
@@ -648,3 +650,105 @@ class TestDiscoverRawPages:
     def test_no_raw_dir_returns_empty(self, tmp_path, monkeypatch):
         monkeypatch.setattr(E, "RAW_ROOT", tmp_path / "nonexistent")
         assert discover_raw_pages() == []
+
+
+# ────────────────────────────────────────────────────────────────────────
+# wiki_page_paths
+# ────────────────────────────────────────────────────────────────────────
+
+
+class TestWikiPagePaths:
+    def test_maps_name_to_path_and_folder(self, tmp_path, monkeypatch):
+        wiki = tmp_path / "wiki"
+        ideas = wiki / "ideas"
+        ideas.mkdir(parents=True)
+        (ideas / "RLHF.md").write_text("body")
+        (wiki / "index.md").write_text("# index")
+        monkeypatch.setattr(E, "WIKI_ROOT", wiki)
+
+        paths = wiki_page_paths()
+        assert "RLHF" in paths
+        path, folder = paths["RLHF"]
+        assert path.endswith("ideas/RLHF.md")
+        assert folder == "ideas"
+
+        # wiki root file → folder == ""
+        path, folder = paths["index"]
+        assert folder == ""
+
+    def test_skips_lint_reports(self, tmp_path, monkeypatch):
+        wiki = tmp_path / "wiki"
+        meta = wiki / "meta"
+        meta.mkdir(parents=True)
+        (meta / "lint-report-2026-01-01.md").write_text("report")
+        (meta / "real-meta.md").write_text("meta")
+        monkeypatch.setattr(E, "WIKI_ROOT", wiki)
+
+        paths = wiki_page_paths()
+        assert "lint-report-2026-01-01" not in paths
+        assert "real-meta" in paths
+
+    def test_no_wiki_dir_returns_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(E, "WIKI_ROOT", tmp_path / "nonexistent")
+        assert wiki_page_paths() == {}
+
+
+# ────────────────────────────────────────────────────────────────────────
+# _filter_and_format_results
+# ────────────────────────────────────────────────────────────────────────
+
+
+class TestFilterAndFormatResults:
+    def test_filters_meta_folder(self):
+        paths = {
+            "RLHF": ("wiki/ideas/RLHF.md", "ideas"),
+            "dashboard": ("wiki/meta/dashboard.md", "meta"),
+        }
+        results = [("dashboard", 0.9), ("RLHF", 0.8)]
+        out = _filter_and_format_results(results, paths, k=5)
+        names = [name for name, _, _ in out]
+        assert "dashboard" not in names
+        assert "RLHF" in names
+
+    def test_filters_root_files(self):
+        paths = {
+            "RLHF": ("wiki/ideas/RLHF.md", "ideas"),
+            "cache": ("wiki/cache.md", ""),  # root file
+            "summary": ("wiki/summary.md", ""),
+        }
+        results = [("cache", 0.95), ("summary", 0.9), ("RLHF", 0.7)]
+        out = _filter_and_format_results(results, paths, k=5)
+        names = [name for name, _, _ in out]
+        assert names == ["RLHF"]
+
+    def test_include_meta_keeps_them(self):
+        paths = {
+            "RLHF": ("wiki/ideas/RLHF.md", "ideas"),
+            "cache": ("wiki/cache.md", ""),
+        }
+        results = [("cache", 0.95), ("RLHF", 0.7)]
+        out = _filter_and_format_results(results, paths, k=5, include_meta=True)
+        names = [name for name, _, _ in out]
+        assert names == ["cache", "RLHF"]
+
+    def test_drops_stale_embeddings_silently(self):
+        # Embedding for a page that no longer exists in wiki/
+        paths = {"RLHF": ("wiki/ideas/RLHF.md", "ideas")}
+        results = [("Deleted-Page", 0.9), ("RLHF", 0.8)]
+        out = _filter_and_format_results(results, paths, k=5)
+        names = [name for name, _, _ in out]
+        assert "Deleted-Page" not in names
+        assert "RLHF" in names
+
+    def test_respects_k_limit(self):
+        paths = {f"P{i}": (f"wiki/ideas/P{i}.md", "ideas") for i in range(10)}
+        results = [(f"P{i}", 1.0 - i * 0.01) for i in range(10)]
+        out = _filter_and_format_results(results, paths, k=3)
+        assert len(out) == 3
+
+    def test_attaches_full_path(self):
+        paths = {"X": ("wiki/ideas/X.md", "ideas")}
+        results = [("X", 0.5)]
+        out = _filter_and_format_results(results, paths, k=1)
+        _, _, path = out[0]
+        assert path == "wiki/ideas/X.md"
