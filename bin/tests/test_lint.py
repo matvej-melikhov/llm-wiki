@@ -28,7 +28,6 @@ from lint import (
     _extract_wikilinks,
     _normalize_wiki_target,
     _normalize_wikilink_text,
-    _parse_index_tables,
     _parse_yaml_subset,
     _wikilink_to_raw_key,
     check_asymmetric_related,
@@ -40,13 +39,12 @@ from lint import (
     check_inline_tags,
     check_legacy_field,
     check_lowercase_tags,
-    check_missing_index_entry,
+    check_missing_summary,
     check_non_canonical_wikilink,
     check_orphan,
     check_raw_link_with_extension,
     check_raw_ref_in_body,
     check_similar_but_unlinked,
-    check_stale_index_entry,
     check_status_not_in_enum,
     check_status_on_entity,
     check_synthesis_drift,
@@ -255,22 +253,16 @@ class TestExtractWikilinks:
 
 
 class TestCheckNonCanonicalWikilink:
-    """All tests pass index_path=Path('/dev/null/missing') to isolate from
-    the live wiki/index.md. Tests that specifically test index parsing
-    construct their own index file via tmp_path."""
-
-    NO_INDEX = Path("/dev/null/missing")
-
     def test_canonical_body_link_ok(self):
         p = make_page(fm_yaml="type: idea", body="See [[RLHF]] for details.\n")
-        assert types_of(check_non_canonical_wikilink([p], self.NO_INDEX)) == []
+        assert types_of(check_non_canonical_wikilink([p])) == []
 
     def test_path_prefixed_body_link_flagged(self):
         p = make_page(
             name="A", fm_yaml="type: idea",
             body="See [[wiki/ideas/RLHF]] for details.\n",
         )
-        issues = issues_of(check_non_canonical_wikilink([p], self.NO_INDEX))
+        issues = issues_of(check_non_canonical_wikilink([p]))
         assert len(issues) == 1
         assert issues[0].type == "non-canonical-wikilink"
         assert issues[0].payload["link"] == "[[wiki/ideas/RLHF]]"
@@ -283,13 +275,13 @@ class TestCheckNonCanonicalWikilink:
             body="From [[raw/articles/foo]].\n",
         )
         # Note: raw-ref-in-body fires here, but non-canonical-wikilink should NOT
-        assert types_of(check_non_canonical_wikilink([p], self.NO_INDEX)) == []
+        assert types_of(check_non_canonical_wikilink([p])) == []
 
     def test_frontmatter_related_flagged(self):
         p = make_page(
             fm_yaml='type: idea\nrelated:\n  - "[[wiki/ideas/PPO]]"',
         )
-        issues = issues_of(check_non_canonical_wikilink([p], self.NO_INDEX))
+        issues = issues_of(check_non_canonical_wikilink([p]))
         assert len(issues) == 1
         assert issues[0].payload["context"] == "frontmatter related"
         assert issues[0].payload["fix"] == "[[PPO]]"
@@ -298,7 +290,7 @@ class TestCheckNonCanonicalWikilink:
         p = make_page(
             fm_yaml='type: idea\ndomain:\n  - "[[domains/Machine Learning]]"',
         )
-        issues = issues_of(check_non_canonical_wikilink([p], self.NO_INDEX))
+        issues = issues_of(check_non_canonical_wikilink([p]))
         assert any("domain" in i.payload["context"] for i in issues)
 
     def test_meta_pages_exempt(self):
@@ -307,54 +299,39 @@ class TestCheckNonCanonicalWikilink:
             folder="meta", fm_yaml="type: meta",
             body="Ingested [[wiki/ideas/RLHF]].\n",
         )
-        assert types_of(check_non_canonical_wikilink([p], self.NO_INDEX)) == []
+        assert types_of(check_non_canonical_wikilink([p])) == []
 
     def test_fenced_code_skipped(self):
         # Code examples may show path-prefixed links — don't flag them
         body = "```\nUse [[wiki/ideas/RLHF]] syntax\n```\n"
         p = make_page(fm_yaml="type: idea", body=body)
-        assert types_of(check_non_canonical_wikilink([p], self.NO_INDEX)) == []
-
-    def test_index_path_prefixed_flagged(self, tmp_path):
-        index = tmp_path / "index.md"
-        index.write_text(
-            "## Ideas\n"
-            "| [[wiki/ideas/RLHF]] | summary |\n"
-            "| [[Canonical]] | other |\n"
-        )
-        p = make_page(name="RLHF", fm_yaml="type: idea")
-        c = make_page(name="Canonical", fm_yaml="type: idea")
-        issues = issues_of(check_non_canonical_wikilink([p, c], index))
-        # Only the path-prefixed entry in index flagged
-        index_issues = [i for i in issues if i.payload["where"] == "wiki/index.md"]
-        assert len(index_issues) == 1
-        assert index_issues[0].payload["fix"] == "[[RLHF]]"
+        assert types_of(check_non_canonical_wikilink([p])) == []
 
     def test_dedup_within_page(self):
         # Same link appearing twice in body → reported once
         body = "Some [[wiki/ideas/RLHF]]. Other [[wiki/ideas/RLHF]] mention.\n"
         p = make_page(fm_yaml="type: idea", body=body)
-        issues = issues_of(check_non_canonical_wikilink([p], self.NO_INDEX))
+        issues = issues_of(check_non_canonical_wikilink([p]))
         assert len(issues) == 1
 
     def test_anchor_preserved_in_fix(self):
         body = "See [[wiki/ideas/RLHF#Section Title]] there.\n"
         p = make_page(fm_yaml="type: idea", body=body)
-        issues = issues_of(check_non_canonical_wikilink([p], self.NO_INDEX))
+        issues = issues_of(check_non_canonical_wikilink([p]))
         assert len(issues) == 1
         assert issues[0].payload["fix"] == "[[RLHF#Section Title]]"
 
     def test_alias_preserved_in_fix(self):
         body = "See [[wiki/ideas/RLHF|кастомный текст]] there.\n"
         p = make_page(fm_yaml="type: idea", body=body)
-        issues = issues_of(check_non_canonical_wikilink([p], self.NO_INDEX))
+        issues = issues_of(check_non_canonical_wikilink([p]))
         assert len(issues) == 1
         assert issues[0].payload["fix"] == "[[RLHF|кастомный текст]]"
 
     def test_anchor_and_alias_preserved(self):
         body = "See [[wiki/ideas/RLHF#Section|alias]] there.\n"
         p = make_page(fm_yaml="type: idea", body=body)
-        issues = issues_of(check_non_canonical_wikilink([p], self.NO_INDEX))
+        issues = issues_of(check_non_canonical_wikilink([p]))
         assert len(issues) == 1
         assert issues[0].payload["fix"] == "[[RLHF#Section|alias]]"
 
@@ -374,22 +351,6 @@ class TestNormalizationIntegration:
         a = make_page(name="A", fm_yaml="type: idea", body="See [[wiki/ideas/B]].\n")
         b = make_page(name="B", fm_yaml="type: idea")
         assert types_of(check_dead_link([a, b])) == []
-
-    def test_path_prefixed_not_stale_index(self, tmp_path, monkeypatch):
-        # Index has [[wiki/ideas/X]], page X exists → not stale
-        monkeypatch.setattr(L, "WIKI_ROOT", tmp_path)
-        index = tmp_path / "index.md"
-        index.write_text("## Ideas\n| [[wiki/ideas/X]] | summary |\n")
-        p = make_page(name="X", fm_yaml="type: idea")
-        assert types_of(check_stale_index_entry([p])) == []
-
-    def test_path_prefixed_not_missing_index(self, tmp_path, monkeypatch):
-        # Index has [[wiki/ideas/X]]; page X exists → not flagged as missing
-        monkeypatch.setattr(L, "WIKI_ROOT", tmp_path)
-        index = tmp_path / "index.md"
-        index.write_text("## Ideas\n| [[wiki/ideas/X]] | summary |\n")
-        p = make_page(name="X", fm_yaml="type: idea")
-        assert types_of(check_missing_index_entry([p])) == []
 
     def test_path_prefixed_in_related_symmetric(self):
         # A.related has [[wiki/ideas/B]]; B.related has [[A]]. Should be symmetric.
@@ -811,61 +772,43 @@ class TestCheckEmptySection:
 
 
 # ────────────────────────────────────────────────────────────────────────
-# check_stale_index_entry (filesystem-dependent)
+# check_missing_summary
 # ────────────────────────────────────────────────────────────────────────
 
 
-class TestCheckStaleIndexEntry:
-    def test_valid_entry_ok(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(L, "WIKI_ROOT", tmp_path)
-        index = tmp_path / "index.md"
-        index.write_text("## Ideas\n| [[Existing-Page]] | some summary |\n")
-        page = make_page(name="Existing-Page", fm_yaml="type: idea")
-        assert types_of(check_stale_index_entry([page])) == []
+class TestCheckMissingSummary:
+    def test_summary_present_ok(self):
+        p = make_page(name="X", fm_yaml="type: idea\nsummary: 'something'")
+        assert types_of(check_missing_summary([p])) == []
 
-    def test_stale_entry_flagged(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(L, "WIKI_ROOT", tmp_path)
-        index = tmp_path / "index.md"
-        index.write_text("## Ideas\n| [[Deleted-Page]] | gone |\n")
-        issues = issues_of(check_stale_index_entry([]))
+    def test_no_summary_flagged(self):
+        p = make_page(name="X", fm_yaml="type: idea")
+        issues = issues_of(check_missing_summary([p]))
         assert len(issues) == 1
-        assert issues[0].type == "stale-index-entry"
-        assert "Deleted-Page" in issues[0].payload["link"]
+        assert issues[0].type == "missing-summary"
+        assert issues[0].payload["page_type"] == "idea"
 
-    def test_no_index_ok(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(L, "WIKI_ROOT", tmp_path)
-        # No index.md — check silently returns
-        assert types_of(check_stale_index_entry([])) == []
-
-
-# ────────────────────────────────────────────────────────────────────────
-# check_missing_index_entry (filesystem-dependent)
-# ────────────────────────────────────────────────────────────────────────
-
-
-class TestCheckMissingIndexEntry:
-    def test_indexed_page_ok(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(L, "WIKI_ROOT", tmp_path)
-        index = tmp_path / "index.md"
-        index.write_text("## Ideas\n| [[My-Idea]] | summary |\n")
-        page = make_page(name="My-Idea", fm_yaml="type: idea")
-        assert types_of(check_missing_index_entry([page])) == []
-
-    def test_missing_entry_flagged(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(L, "WIKI_ROOT", tmp_path)
-        index = tmp_path / "index.md"
-        index.write_text("## Ideas\n| Страница | Суть |\n|---|---|\n")
-        page = make_page(name="Unlisted-Idea", fm_yaml="type: idea")
-        issues = issues_of(check_missing_index_entry([page]))
+    def test_empty_summary_flagged(self):
+        p = make_page(name="X", fm_yaml='type: idea\nsummary: ""')
+        issues = issues_of(check_missing_summary([p]))
         assert len(issues) == 1
-        assert issues[0].type == "missing-index-entry"
+        assert issues[0].type == "missing-summary"
 
-    def test_meta_pages_not_required_in_index(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(L, "WIKI_ROOT", tmp_path)
-        index = tmp_path / "index.md"
-        index.write_text("## Ideas\n")
-        meta = make_page(folder="meta", name="cache", fm_yaml="type: meta")
-        assert types_of(check_missing_index_entry([meta])) == []
+    def test_whitespace_summary_flagged(self):
+        p = make_page(name="X", fm_yaml="type: idea\nsummary: '   '")
+        issues = issues_of(check_missing_summary([p]))
+        assert len(issues) == 1
+
+    def test_meta_pages_skipped(self):
+        p = make_page(folder="meta", name="cache", fm_yaml="type: meta")
+        assert types_of(check_missing_summary([p])) == []
+
+    def test_all_content_types_required(self):
+        for folder, ptype in [("ideas", "idea"), ("entities", "entity"),
+                              ("domains", "domain"), ("questions", "question")]:
+            p = make_page(folder=folder, name="X", fm_yaml=f"type: {ptype}")
+            issues = issues_of(check_missing_summary([p]))
+            assert len(issues) == 1, f"{folder} should require summary"
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -910,30 +853,6 @@ class TestCheckBinarySourceOutsideFormats:
         meta.mkdir()
         (meta / "ingested.json").write_text("{}")
         assert types_of(check_binary_source_outside_formats([])) == []
-
-
-# ────────────────────────────────────────────────────────────────────────
-# Index table parser
-# ────────────────────────────────────────────────────────────────────────
-
-
-class TestParseIndexTables:
-    def test_parses_wikilinks_from_table(self):
-        text = "## Ideas\n| [[RLHF]] | RL from human feedback |\n"
-        result = _parse_index_tables(text)
-        assert "RLHF" in result.get("Ideas", set())
-
-    def test_separator_row_skipped(self):
-        text = "## Ideas\n| Страница | Суть |\n|---|---|\n| [[RLHF]] | desc |\n"
-        result = _parse_index_tables(text)
-        assert "RLHF" in result["Ideas"]
-        # Separator should not appear as a name
-        assert not any("---" in n for n in result["Ideas"])
-
-    def test_unknown_section_ignored(self):
-        text = "## Changelog\n| [[Foo]] | bar |\n"
-        result = _parse_index_tables(text)
-        assert "Changelog" not in result
 
 
 # ────────────────────────────────────────────────────────────────────────
