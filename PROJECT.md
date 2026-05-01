@@ -1095,10 +1095,14 @@ Core: bases (включён), canvas, daily-notes, audio-recorder, sync.
 
 - **`contradiction_candidates`** — отдельное поле в `lint-state.json` (не issue), список пар страниц для Layer 2 LLM-проверки на противоречия. Top X% по cosine (default p75, floor 0.5). Excludes meta-страниц и уже-связанные пары допускаются (контрадикции бывают и между связанными). На live-wiki из 1485 пар → 261 candidate (5.7× редукция работы для LLM).
 
-- **Hybrid query** — `query` skill теперь использует embeddings как pre-filter при больших wiki. Если `wc -w wiki/index.md ≥ 10000` → запустить `bin/embed.py query "<вопрос>" -k 10` вместо чтения index целиком. CLI `query` и `similar` теперь:
-  - возвращают полные пути (`wiki/ideas/RLHF.md`), а не stem'ы — Claude может читать через Read напрямую
-  - фильтруют meta-страницы (`cache`, `summary`, `log`) — флаг `--all` чтобы вернуть
-  - graceful degradation: если embedder недоступен → fallback на чтение index целиком
+- **Hybrid query** — `query` skill теперь использует embeddings как pre-filter при больших wiki. Если `wc -w wiki/index.md ≥ 10000` → запустить `bin/embed.py query "<вопрос>" -k 10` вместо чтения index целиком. CLI `query` и `similar` теперь возвращают **отфильтрованный по семантике index** — путь, similarity и саммари из `wiki/index.md` в одной строке:
+
+  ```
+  +0.567  wiki/domains/Reinforcement Learning.md  — Поддомен ML: policy gradient, value-based методы, RLHF.
+  +0.528  wiki/ideas/SFT.md  — Supervised fine-tuning на демонстрациях; первый шаг RLHF.
+  ```
+
+  Двухэтапный retrieval: embedder делает **recall** (top-10 по cosine), агент делает **precision** (выбирает 3-5 по саммари как в Standard режиме). Полные страницы читаются только для выбранных. Meta-файлы (`cache`, `summary`, `log`) исключены — флаг `--all` чтобы вернуть. Graceful degradation: если embedder недоступен → fallback на чтение `index.md` целиком.
 
 - **Безопасность по умолчанию:** Layer 1.5 — pure consumer векторов. Ollama не нужна для запуска lint, только pre-computed `embeddings.json`. Если файлы пустые/отсутствуют — graceful degradation с сообщением «run embed.py update».
 

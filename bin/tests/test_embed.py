@@ -35,10 +35,12 @@ from embed import (
     OllamaEmbedder,
     OpenAIEmbedder,
     _filter_and_format_results,
+    _format_result_line,
     content_hash,
     cosine,
     discover_raw_pages,
     discover_wiki_pages,
+    parse_index_summaries,
     percentile,
     strip_frontmatter,
     update_index,
@@ -706,7 +708,7 @@ class TestFilterAndFormatResults:
         }
         results = [("dashboard", 0.9), ("RLHF", 0.8)]
         out = _filter_and_format_results(results, paths, k=5)
-        names = [name for name, _, _ in out]
+        names = [t[0] for t in out]
         assert "dashboard" not in names
         assert "RLHF" in names
 
@@ -718,7 +720,7 @@ class TestFilterAndFormatResults:
         }
         results = [("cache", 0.95), ("summary", 0.9), ("RLHF", 0.7)]
         out = _filter_and_format_results(results, paths, k=5)
-        names = [name for name, _, _ in out]
+        names = [t[0] for t in out]
         assert names == ["RLHF"]
 
     def test_include_meta_keeps_them(self):
@@ -728,7 +730,7 @@ class TestFilterAndFormatResults:
         }
         results = [("cache", 0.95), ("RLHF", 0.7)]
         out = _filter_and_format_results(results, paths, k=5, include_meta=True)
-        names = [name for name, _, _ in out]
+        names = [t[0] for t in out]
         assert names == ["cache", "RLHF"]
 
     def test_drops_stale_embeddings_silently(self):
@@ -736,7 +738,7 @@ class TestFilterAndFormatResults:
         paths = {"RLHF": ("wiki/ideas/RLHF.md", "ideas")}
         results = [("Deleted-Page", 0.9), ("RLHF", 0.8)]
         out = _filter_and_format_results(results, paths, k=5)
-        names = [name for name, _, _ in out]
+        names = [t[0] for t in out]
         assert "Deleted-Page" not in names
         assert "RLHF" in names
 
@@ -750,5 +752,156 @@ class TestFilterAndFormatResults:
         paths = {"X": ("wiki/ideas/X.md", "ideas")}
         results = [("X", 0.5)]
         out = _filter_and_format_results(results, paths, k=1)
-        _, _, path = out[0]
+        _name, _sim, path, _summary = out[0]
         assert path == "wiki/ideas/X.md"
+
+    def test_attaches_summary_when_present(self):
+        paths = {"X": ("wiki/ideas/X.md", "ideas")}
+        summaries = {"X": "key idea about X"}
+        results = [("X", 0.5)]
+        out = _filter_and_format_results(results, paths, k=1, summaries=summaries)
+        _name, _sim, _path, summary = out[0]
+        assert summary == "key idea about X"
+
+    def test_empty_summary_when_absent(self):
+        paths = {"X": ("wiki/ideas/X.md", "ideas")}
+        results = [("X", 0.5)]
+        # No summaries dict → empty string
+        out = _filter_and_format_results(results, paths, k=1)
+        _name, _sim, _path, summary = out[0]
+        assert summary == ""
+
+    def test_summary_lookup_misses_safely(self):
+        # Page in paths but not in summaries → empty summary
+        paths = {"X": ("wiki/ideas/X.md", "ideas")}
+        summaries = {"OtherPage": "something"}
+        results = [("X", 0.5)]
+        out = _filter_and_format_results(results, paths, k=1, summaries=summaries)
+        _, _, _, summary = out[0]
+        assert summary == ""
+
+
+# ────────────────────────────────────────────────────────────────────────
+# parse_index_summaries
+# ────────────────────────────────────────────────────────────────────────
+
+
+class TestParseIndexSummaries:
+    def test_basic_table(self, tmp_path):
+        index = tmp_path / "index.md"
+        index.write_text(
+            "## Ideas\n"
+            "| Страница | Суть |\n"
+            "|---|---|\n"
+            "| [[RLHF]] | RL from human feedback |\n"
+            "| [[PPO]] | Proximal Policy Optimization |\n"
+        )
+        result = parse_index_summaries(index)
+        assert result["RLHF"] == "RL from human feedback"
+        assert result["PPO"] == "Proximal Policy Optimization"
+
+    def test_multiple_sections(self, tmp_path):
+        index = tmp_path / "index.md"
+        index.write_text(
+            "## Ideas\n"
+            "| [[Idea1]] | first idea |\n"
+            "## Entities\n"
+            "| [[Person1]] | a person |\n"
+            "## Domains\n"
+            "| [[Domain1]] | a domain |\n"
+        )
+        result = parse_index_summaries(index)
+        assert result == {
+            "Idea1": "first idea",
+            "Person1": "a person",
+            "Domain1": "a domain",
+        }
+
+    def test_unknown_sections_ignored(self, tmp_path):
+        index = tmp_path / "index.md"
+        index.write_text(
+            "## Changelog\n"
+            "| [[Foo]] | bar |\n"  # Changelog isn't in known sections
+            "## Ideas\n"
+            "| [[Real]] | real summary |\n"
+        )
+        result = parse_index_summaries(index)
+        assert "Foo" not in result
+        assert result["Real"] == "real summary"
+
+    def test_separator_row_skipped(self, tmp_path):
+        index = tmp_path / "index.md"
+        index.write_text(
+            "## Ideas\n"
+            "| Страница | Суть |\n"
+            "|---|---|\n"
+            "| [[Real]] | real |\n"
+        )
+        result = parse_index_summaries(index)
+        # Only "Real", not the header row
+        assert result == {"Real": "real"}
+
+    def test_aliased_wikilink(self, tmp_path):
+        # [[Page|Alias]] should still extract Page as the key
+        index = tmp_path / "index.md"
+        index.write_text(
+            "## Ideas\n"
+            "| [[Real-Name\\|displayed]] | summary |\n"
+        )
+        result = parse_index_summaries(index)
+        assert "Real-Name" in result
+
+    def test_empty_summary_skipped(self, tmp_path):
+        # Row without summary text → skip
+        index = tmp_path / "index.md"
+        index.write_text(
+            "## Ideas\n"
+            "| [[A]] | has summary |\n"
+            "| [[B]] |  |\n"
+        )
+        result = parse_index_summaries(index)
+        assert "A" in result
+        assert "B" not in result
+
+    def test_frontmatter_stripped(self, tmp_path):
+        index = tmp_path / "index.md"
+        index.write_text(
+            "---\n"
+            "type: meta\n"
+            "---\n"
+            "## Ideas\n"
+            "| [[X]] | content |\n"
+        )
+        result = parse_index_summaries(index)
+        assert result == {"X": "content"}
+
+    def test_missing_file(self, tmp_path):
+        result = parse_index_summaries(tmp_path / "does-not-exist.md")
+        assert result == {}
+
+    def test_no_tables_returns_empty(self, tmp_path):
+        index = tmp_path / "index.md"
+        index.write_text("# Just a heading\n\nNothing structured.\n")
+        assert parse_index_summaries(index) == {}
+
+
+# ────────────────────────────────────────────────────────────────────────
+# _format_result_line
+# ────────────────────────────────────────────────────────────────────────
+
+
+class TestFormatResultLine:
+    def test_with_summary(self):
+        line = _format_result_line(0.621, "wiki/ideas/RLHF.md", "RL from human feedback")
+        assert "+0.621" in line
+        assert "wiki/ideas/RLHF.md" in line
+        assert "— RL from human feedback" in line
+
+    def test_without_summary(self):
+        line = _format_result_line(0.5, "wiki/ideas/X.md", "")
+        assert "—" not in line
+        assert "wiki/ideas/X.md" in line
+
+    def test_negative_similarity(self):
+        line = _format_result_line(-0.1, "wiki/ideas/X.md", "")
+        assert "-0.100" in line

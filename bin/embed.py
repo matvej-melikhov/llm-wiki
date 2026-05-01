@@ -413,6 +413,71 @@ def discover_wiki_pages() -> list[tuple[str, str]]:
     return pages
 
 
+_INDEX_SECTION_HEADINGS = {"Ideas", "Entities", "Questions", "Domains"}
+_HEADING_RE = re.compile(r"^##\s+(.+?)\s*$")
+_TABLE_SEP_RE = re.compile(r"^\s*\|[\s\-:|]+\|\s*$")
+_INDEX_WIKILINK_RE = re.compile(r"\[\[([^\]|#]+?)(?:\|[^\]]*)?\]\]")
+# Placeholder for escaped pipes in markdown tables: `\|` is part of cell
+# content, not a column separator. We swap before splitting and restore after.
+_PIPE_PLACEHOLDER = "__ESCAPED_PIPE__"
+
+
+def parse_index_summaries(index_path: Path | None = None) -> dict[str, str]:
+    """Parse wiki/index.md → {page_name: summary}.
+
+    Each section (## Ideas / ## Entities / ## Questions / ## Domains) holds
+    a 2-column table: `| [[Page Name]] | one-line summary |`. We pull
+    the first wikilink target from column 1 and the trimmed text from
+    column 2.
+
+    Returns empty dict on missing file or parse error — caller handles
+    gracefully (summaries are optional metadata).
+    """
+    if index_path is None:
+        index_path = WIKI_ROOT / "index.md"
+    if not index_path.is_file():
+        return {}
+
+    try:
+        text = index_path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+
+    # Strip frontmatter
+    body = strip_frontmatter(text)
+
+    summaries: dict[str, str] = {}
+    in_section = False
+    for line in body.split("\n"):
+        h = _HEADING_RE.match(line)
+        if h:
+            in_section = h.group(1).strip() in _INDEX_SECTION_HEADINGS
+            continue
+        if not in_section:
+            continue
+        if not line.lstrip().startswith("|"):
+            continue
+        if _TABLE_SEP_RE.match(line):
+            continue
+        # Escaped pipes (\|) are content, not separators — swap to placeholder
+        # before splitting, restore inside each cell.
+        safe = line.replace(r"\|", _PIPE_PLACEHOLDER)
+        cells = [
+            c.strip().replace(_PIPE_PLACEHOLDER, "|")
+            for c in safe.strip().strip("|").split("|")
+        ]
+        if len(cells) < 2:
+            continue
+        link_match = _INDEX_WIKILINK_RE.search(cells[0])
+        if not link_match:
+            continue
+        name = link_match.group(1).strip()
+        summary = cells[1].strip()
+        if name and summary:
+            summaries[name] = summary
+    return summaries
+
+
 def wiki_page_paths() -> dict[str, tuple[str, str]]:
     """Map basename → (full_path, folder).
 
@@ -546,15 +611,18 @@ def _filter_and_format_results(
     paths: dict[str, tuple[str, str]],
     k: int,
     include_meta: bool = False,
-) -> list[tuple[str, float, str]]:
-    """Filter top_k results by content folder, attach full paths.
+    summaries: dict[str, str] | None = None,
+) -> list[tuple[str, float, str, str]]:
+    """Filter top_k results by content folder, attach paths and summaries.
 
-    Returns list of (name, similarity, full_path) tuples, length <= k.
+    Returns list of (name, similarity, full_path, summary) tuples, length <= k.
+    summary is "" if not present in index.md.
     Stale embeddings (page no longer exists) are dropped silently.
     Meta pages and wiki root files (cache/summary/log/index) are excluded
     unless include_meta=True.
     """
-    out: list[tuple[str, float, str]] = []
+    summaries = summaries or {}
+    out: list[tuple[str, float, str, str]] = []
     for name, sim in results:
         info = paths.get(name)
         if info is None:
@@ -562,10 +630,17 @@ def _filter_and_format_results(
         path, folder = info
         if not include_meta and folder in ("", "meta"):
             continue
-        out.append((name, sim, path))
+        out.append((name, sim, path, summaries.get(name, "")))
         if len(out) >= k:
             break
     return out
+
+
+def _format_result_line(sim: float, path: str, summary: str) -> str:
+    """One result line: '+0.621  wiki/ideas/RLHF.md  — summary text'.
+    No summary → no trailing dash."""
+    base = f"  {sim:+.3f}  {path}"
+    return f"{base}  — {summary}" if summary else base
 
 
 def cmd_query(args) -> int:
@@ -576,16 +651,18 @@ def cmd_query(args) -> int:
         print("wiki index is empty. run: embed.py update", file=sys.stderr)
         return 1
     paths = wiki_page_paths()
+    summaries = parse_index_summaries()
     try:
         q_vec = embedder.embed(args.text)
     except EmbedderUnavailable as e:
         print(f"embedder unavailable: {e}", file=sys.stderr)
         return 2
-    # Get more candidates than k to allow for filtering
     raw = wiki_idx.top_k(q_vec, k=args.k * 3 if not args.all else args.k)
-    filtered = _filter_and_format_results(raw, paths, args.k, include_meta=args.all)
-    for name, sim, path in filtered:
-        print(f"  {sim:+.3f}  {path}")
+    filtered = _filter_and_format_results(
+        raw, paths, args.k, include_meta=args.all, summaries=summaries,
+    )
+    for _name, sim, path, summary in filtered:
+        print(_format_result_line(sim, path, summary))
     return 0
 
 
@@ -598,14 +675,17 @@ def cmd_similar(args) -> int:
         print("  hint: run 'embed.py update' first", file=sys.stderr)
         return 1
     paths = wiki_page_paths()
+    summaries = parse_index_summaries()
     raw = wiki_idx.top_k(
         vec,
         k=args.k * 3 if not args.all else args.k,
         exclude={args.page},
     )
-    filtered = _filter_and_format_results(raw, paths, args.k, include_meta=args.all)
-    for name, sim, path in filtered:
-        print(f"  {sim:+.3f}  {path}")
+    filtered = _filter_and_format_results(
+        raw, paths, args.k, include_meta=args.all, summaries=summaries,
+    )
+    for _name, sim, path, summary in filtered:
+        print(_format_result_line(sim, path, summary))
     return 0
 
 
