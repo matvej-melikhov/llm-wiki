@@ -115,7 +115,7 @@
 - `domain: [...]` — wikilinks на domain-страницы (`wiki/domains/`). **Convention: упорядочивать от частного к общему** — первый в списке считается primary classification (например, для PPO: `[Reinforcement Learning, Machine Learning]`). Это редакторское решение, lint не enforce'ит. Если страница пока без domain — `domain: []`
 - `updated: YYYY-MM-DD`
 
-Полная схема — `.claude/skills/wiki/references/frontmatter.md`.
+Полная схема — `CLAUDE.md` раздел Frontmatter.
 
 ### Inline в тексте
 
@@ -170,7 +170,7 @@
 
 ### `wiki/cache.md`
 
-Перезаписать целиком с учётом нового ingest. Формат — в `.claude/skills/wiki/SKILL.md`.
+Перезаписать целиком с учётом нового ingest. Формат — в `CLAUDE.md` раздел «Кэш контекста».
 
 ### `wiki/summary.md`
 

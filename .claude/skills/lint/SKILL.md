@@ -410,8 +410,7 @@ per-page sha256. На первом запуске после миграции st
 
 ## Конвенции wiki
 
-См. `.claude/skills/wiki/references/frontmatter.md` — schema, теги, regex
-имён файлов и т.д. Здесь не дублируем.
+См. `CLAUDE.md` раздел Frontmatter — схема, типы, поля. Здесь не дублируем.
 
 ---
 
