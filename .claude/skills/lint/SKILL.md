@@ -35,13 +35,18 @@ python3 bin/static_lint.py [--approx]
 
 Скрипт сам делает:
 - skip-check (если wiki не менялась и нет накопленных issues — пропуск)
-- детект 13 типов issues (Layer 1) + 2 embedding-based (Layer 1.5 при `--approx`)
+- детект 13 типов issues (Layer 1) + 2 embedding-based (Layer 1.5)
 - **inline применение script auto-fixes** для всех script-fixable типов
 - запись `lint-state.json` с remaining issues (agent-fix + ask + skip)
 
-Флаг `--approx` включает embedding-based проверки `similar-but-unlinked` и
-`synthesis-drift` плюс заполняет `contradiction_candidates` для Layer 2. Если
-эмбеддингов нет (Ollama не запущена) — скрипт тихо игнорирует флаг.
+Embedding-based проверки (`similar-but-unlinked`, `synthesis-drift`,
+`contradiction_candidates`) запускаются всегда, если есть `wiki/meta/embeddings.json`.
+Если эмбеддингов нет (Ollama не запущена) — warning + skip только этих
+checks, остальные работают.
+
+В режиме `--quick` (по умолчанию) скрипт фильтрует scope: новые issues
+эмитятся только для touched pages (контент-хеш изменился с прошлого lint),
+старые issues для не-touched сохраняются. В `--full` scope не ограничен.
 
 ### Step 2. Прочитать `lint-state.json`
 
@@ -59,8 +64,9 @@ python3 bin/static_lint.py [--approx]
 
 ### Step 4. Agent auto-fixes
 
-Для issues типа `missing-summary` и `domain-order` (см. секцию «Agent auto-fixes»
-ниже) применить LLM-генерируемые правки. Удалить применённые из `open_issues`.
+Для issues типа `missing-summary`, `domain-order`, `tag-casing` (см. секцию
+«Agent auto-fixes» ниже) применить LLM-генерируемые правки. Удалить
+применённые из `open_issues`.
 
 ### Step 5. Ask-dialogue
 
@@ -77,152 +83,141 @@ Issues с ответом «отложить» остаются в `open_issues`.
 
 ## Layer 2: LLM-проверки
 
-Layer 2 запускается **этим скиллом** после Layer 1+1.5. Задача — найти
-семантические нарушения, которые программно не поймать.
+Layer 2 запускается **этим скиллом** после Layer 1+1.5. Каждая проверка ниже —
+самостоятельное задание: дано **что найти**, **формат issue**, **граничные
+случаи**. Способ исполнения (как читать страницы, в каком порядке, в одном
+батче или нескольких) — на твоё усмотрение. Используй доступные артефакты
+(перечислены в каждой секции) и применяй естественный triage.
 
-### `domain-order` — порядок доменов в frontmatter
+### `domain-order`
 
-Convention: в поле `domain:` домены идут **от частного к общему** (первый =
-primary classification, используется для раскраски knowledge map).
-
-**Почему LLM, не скрипт.** Иерархия доменов («RL ⊂ ML») — знание о мире, не
-структурное свойство wiki. Скриптовые подсчёты ломаются: новый широкий
-домен начинает с count=1; cross-cutting узкий домен может иметь много страниц.
-
-**Когда проверять.** Перед применением agent fix'ов в Step 4. Для каждой
-content-страницы с ≥2 доменами:
-1. Прочитать `domain:` массив из frontmatter.
-2. Применить семантическое суждение: упорядочены ли они от узкого к широкому?
-3. Если нет — добавить issue:
-   ```json
-   {
-     "type": "domain-order",
-     "where": "wiki/ideas/PPO.md",
-     "current": ["Machine Learning", "Reinforcement Learning"],
-     "expected": ["Reinforcement Learning", "Machine Learning"],
-     "reasoning": "RL ⊂ ML"
-   }
-   ```
-4. Если домены разнородные/параллельные (например `[ML, Knowledge Management]`) —
-   issue не создаём.
-
-### `tag-casing` — регистр аббревиатур в тегах
-
-Convention: аббревиатуры uppercase (`ML`, `RL`, `IR`, `NLP`, `RLHF`), обычные
-слова TitleCase (`Code`, `Optimization`, `Alignment`).
-
-**Почему LLM, не скрипт.** Регистр требует семантики. `Code` — обычное слово,
-не аббревиатура. `LoRA` — аббревиатура с нестандартным регистром. `MapReduce` —
-композит. Скрипт не отличит без словаря, а словарь полным быть не может.
-
-**Когда проверять.** Перед Step 4. Для каждой страницы с тегами:
-1. Прочитать `tags:` массив.
-2. Для каждого тега, который выглядит подозрительно (lowercase у явной
-   аббревиатуры, mixed case у обычного слова), применить семантическое
-   суждение.
-3. Если регистр неправильный — добавить issue (один issue на тег):
-   ```json
-   {
-     "type": "tag-casing",
-     "where": "wiki/ideas/X.md",
-     "current": "ml",
-     "expected": "ML",
-     "reasoning": "ML — аббревиатура (Machine Learning)"
-   }
-   ```
+**Цель:** в поле `domain:` домены должны быть упорядочены от частного к
+общему. Первый = primary classification, используется для раскраски в
+knowledge map.
 
 **Что НЕ флагуем:**
-- Capitalized обычные слова: `Code`, `Optimization`, `Math`, `Alignment` — это TitleCase правильный, не аббревиатуры.
-- Аббревиатуры с нестандартным регистром, если он канонический: `LoRA`, `MapReduce`, `KMeans` — оставляем.
-- Уже-uppercase аббревиатуры: `ML`, `RL`, `IR`, `RLHF` — корректные.
+- Параллельные/cross-cutting домены без иерархии: `[Machine Learning, Knowledge Management]` — оба корневые, иерархии нет.
+- Один домен — упорядочивать нечего.
+
+**Issue format:**
+```json
+{
+  "type": "domain-order",
+  "where": "wiki/ideas/PPO.md",
+  "current": ["Machine Learning", "Reinforcement Learning"],
+  "expected": ["Reinforcement Learning", "Machine Learning"],
+  "reasoning": "RL ⊂ ML"
+}
+```
+
+Это знание о мире (RL — поддомен ML), а не структурное свойство wiki.
+Скриптовые подсчёты member-pages ломаются на молодой wiki, поэтому LLM.
+
+### `tag-casing`
+
+**Цель:** теги во frontmatter с правильным регистром. Аббревиатуры
+uppercase (`ML`, `RL`, `IR`, `NLP`, `RLHF`), обычные слова TitleCase
+(`Code`, `Optimization`, `Alignment`).
 
 **Что флагуем:**
 - Lowercase аббревиатуры: `ml` → `ML`, `rl` → `RL`.
 - Lowercase обычные слова: `optimization` → `Optimization`.
 - Очевидные опечатки регистра: `mL` → `ML`.
 
-### `contradiction` — противоречие между утверждениями двух страниц
+**Что НЕ флагуем:**
+- Уже-uppercase аббревиатуры: `ML`, `RL`, `IR`, `RLHF`.
+- Capitalized обычные слова: `Code`, `Optimization`, `Math`, `Alignment`.
+- Канонические аббревиатуры с нестандартным регистром: `LoRA`, `MapReduce`, `KMeans`.
 
-**Стратегия зависит от наличия `contradiction_candidates` в state:**
-
-**С `--approx`:** в `lint-state.json` есть отфильтрованный список пар
-(cosine ≥ порог). Layer 2 проверяет **только эти пары** — десятки штук
-вместо O(n²).
-
+**Issue format** (один issue на тег):
+```json
+{
+  "type": "tag-casing",
+  "where": "wiki/ideas/X.md",
+  "current": "ml",
+  "expected": "ML",
+  "reasoning": "ML — аббревиатура (Machine Learning)"
+}
 ```
-1. Прочитать contradiction_candidates (отсортирован по similarity descending).
-2. Для каждой пары прочитать обе страницы, сравнить утверждения.
-3. Если противоречие найдено — добавить:
-   {"type": "contradiction", "page_a": "...", "page_b": "...",
-    "claim": "<краткое описание>"}
-4. Если противоречий нет — не флагать «проверено и чисто».
+
+### `contradiction`
+
+**Цель:** найти пары страниц с прямо противоречивыми утверждениями (одна
+говорит X, другая ¬X на ту же тему).
+
+**Что НЕ контрадикция:**
+- Дополняющие утверждения («A это X», «A также Y»).
+- Утверждения на разные подтемы.
+- Несогласованности в формулировках без логического противоречия.
+
+**Доступные артефакты:**
+- `lint-state.json::contradiction_candidates` — список пар, отфильтрованный
+  Layer 1.5 по cosine similarity. Это primary entry point — пары, у которых
+  даже теоретически может быть противоречие. Если поле есть — начинай
+  отсюда.
+- Если нет (эмбеддинги не доступны) — построй кандидатов сам через
+  topic-overlap (общие домены, общие теги, упоминания друг друга).
+
+**Issue format:**
+```json
+{
+  "type": "contradiction",
+  "page_a": "wiki/ideas/A.md",
+  "page_b": "wiki/ideas/B.md",
+  "claim": "<одно предложение про что они расходятся>"
+}
 ```
-
-**Без `--approx`:** полный обход O(n²) дорог. Используем topic-overlap
-эвристику для построения кандидатов:
-
-1. Для каждой пары content-страниц вычислить overlap-score:
-   - +2 за каждый общий домен в `domain:`
-   - +1 за каждый общий тег в `tags:` (после нормализации регистра)
-   - +1 если в body одной встречается имя другой как plain text (не wikilink)
-2. Сортировать пары по убыванию score.
-3. Взять top-10 пар (или меньше — если у меньшего числа overlap > 0).
-4. Для каждой пары прочитать обе страницы и проверить на противоречие.
-
-Это grubый аналог embedding similarity без векторов. Для wiki >50 страниц
-лучше включать `--approx`.
 
 ### `outdated-claim`
 
-Утверждение в `[[A]]` потенциально опровергнуто более новой страницей `[[B]]`.
+**Цель:** утверждение в более старой странице опровергнуто более новой.
 
-**Когда проверять.** Идти по парам с пересекающимися темами (используя
-`contradiction_candidates` если есть). Для каждой пары: если у `B` дата
-`updated:` новее, чем у `A`, и темы пересекаются — проверить, не противоречит
-ли `B` утверждениям в `A`.
+Проверяй только пары где даты `updated:` различаются и темы пересекаются.
+Можно использовать те же `contradiction_candidates`. Дополнительная
+эвристика: A.updated < B.updated, B содержит явное «X has been replaced»,
+«Y is no longer recommended», «previously, but now» паттерны.
 
-Issue:
+**Issue format:**
 ```json
 {
   "type": "outdated-claim",
   "where": "wiki/ideas/A.md",
-  "claim": "<утверждение в A>",
+  "claim": "<устаревшее утверждение в A>",
   "conflicts_with": "wiki/ideas/B.md"
 }
 ```
 
 ### `missing-concept`
 
-Концепция упомянута в **≥3 разных content-страницах** (не в meta), но своей
-wiki-страницы у неё нет.
+**Цель:** концепция упомянута в **≥3 разных content-страницах**, но своей
+wiki-страницы у неё нет — кандидат на создание.
 
-**Что считать «упоминанием»:**
-- Capitalized one-word terms (аббревиатуры, имена методов): `GAE`, `LoRA`, `BERT`
+**Что считается «упоминанием»:**
+- Capitalized one-word terms (аббревиатуры, имена методов): `GAE`, `LoRA`, `BERT`.
 - Multi-word concepts: `Monte Carlo`, `Temporal Difference Learning`,
-  `Markov Decision Process`
-- Учитываем упоминания в **теле и в frontmatter**, **исключаем**:
-  - wikilinks (`[[GAE]]` — уже есть ссылка, дубль не нужен)
-  - code blocks (` ```...``` ` и ` `inline` `) — это примеры/код, не нарратив
-  - meta-страницы (`wiki/cache.md`, `wiki/log.md`, `wiki/index.md`) — это
-    мусор, а не контент
+  `Markov Decision Process`.
 
-**Threshold:** 3 разных страницы. Повторное упоминание в одной странице не
-накручивает.
+**Что НЕ считается упоминанием:**
+- Wikilinks (`[[GAE]]`) — отдельный case, ловится `dead-link`.
+- Code blocks (fenced ``` или inline `code`) — это примеры/код, не нарратив.
+- Meta-страницы (`wiki/cache.md`, `wiki/log.md`, `wiki/index.md`).
 
-**Когда проверять.** Для каждого кандидата:
-1. Подсчитать count страниц где он встречается (после исключений выше).
-2. Если count ≥ 3 и страницы `<term>.md` нет в `wiki/{ideas,entities}/`:
-3. Решить агентски: это термин достойный своей страницы (реальная концепция,
-   а не общеупотребительное слово)?
-4. Если да — добавить issue:
-   ```json
-   {
-     "type": "missing-concept",
-     "term": "GAE",
-     "mentioned_in": ["wiki/ideas/PPO.md", "wiki/ideas/TD Learning.md",
-                       "wiki/ideas/Advantage Function.md"]
-   }
-   ```
+**Threshold:** 3 разных страницы (не 3 упоминания). Повторное упоминание в
+одной странице не накручивает.
+
+**Доступная эвристика:** Bash-grep по capitalized phrases, sort | uniq -c,
+top кандидатов — дешёвый pre-filter. Дальше LLM судит «реальный концепт
+достойный страницы или общеупотребительное слово».
+
+**Issue format:**
+```json
+{
+  "type": "missing-concept",
+  "term": "GAE",
+  "mentioned_in": ["wiki/ideas/PPO.md", "wiki/ideas/TD Learning.md",
+                    "wiki/ideas/Advantage Function.md"]
+}
+```
 
 ---
 
@@ -403,11 +398,12 @@ Lint нашёл проблемы, требующие решения:
 
 | Команда | Поведение |
 |---|---|
-| `/lint` | Полный pipeline. Skip-check внутри `static_lint.py` пропустит запуск если wiki не менялась. |
-| `/lint --force` | Передать `--force` в скрипт — игнорировать skip-check. |
-| `/lint --fast` | Только Step 1 (script). Без Layer 2 LLM-проверок и без agent-fixes. |
-| `/lint --approx` | Step 1 c `--approx` (Layer 1.5 эмбеддинги). Layer 2 будет использовать `contradiction_candidates`. |
-| `/lint --approx --fast` | Layer 1+1.5 без LLM-фазы. Максимум структурных + семантических issues без затрат. |
+| `/lint` | **--quick (default)**: skip-check по wiki_hash; новые issues эмитятся только для touched pages (контент-хеш изменился с прошлого lint); старые issues для не-touched сохраняются. Embedding checks (similar-but-unlinked, synthesis-drift) запускаются всегда если есть `wiki/meta/embeddings.json`. |
+| `/lint --full` | Полный audit. Skip-check игнорируется, scope не ограничен. Используется periodically для глубокой проверки (раз в неделю, или после массового рефактора). |
+
+Touched detection: `wiki_hash` сохраняется как aggregate, `page_hashes` —
+per-page sha256. На первом запуске после миграции state'а bootstrap трактует
+все страницы как touched (де-факто = `--full`).
 
 ---
 

@@ -40,6 +40,9 @@ from static_lint import (
     _resolve_templater,
     _wikilink_to_raw_key,
     apply_auto_fixes,
+    compute_page_hashes,
+    compute_touched_pages,
+    issue_involves_pages,
     check_asymmetric_related,
     check_binary_source_outside_formats,
     check_dangling_domain_ref,
@@ -1122,6 +1125,88 @@ class TestApplyAutoFixes:
         remaining, fixed = apply_auto_fixes(issues)
         assert fixed == 0
         assert len(remaining) == 1
+
+
+# ────────────────────────────────────────────────────────────────────────
+# compute_page_hashes / compute_touched_pages / issue_involves_pages
+# ────────────────────────────────────────────────────────────────────────
+
+
+class TestComputePageHashes:
+    def test_per_page_hash_includes_full_content(self):
+        a = make_page(name="A", fm_yaml="type: idea", body="hello")
+        b = make_page(name="B", fm_yaml="type: idea", body="world")
+        h = compute_page_hashes([a, b])
+        assert set(h.keys()) == {"wiki/ideas/A.md", "wiki/ideas/B.md"}
+        assert h["wiki/ideas/A.md"] != h["wiki/ideas/B.md"]
+
+    def test_frontmatter_change_changes_hash(self):
+        a = make_page(name="A", fm_yaml="type: idea\nstatus: ready", body="x")
+        a2 = make_page(name="A", fm_yaml="type: idea\nstatus: draft", body="x")
+        assert (
+            compute_page_hashes([a])["wiki/ideas/A.md"]
+            != compute_page_hashes([a2])["wiki/ideas/A.md"]
+        )
+
+
+class TestComputeTouchedPages:
+    def test_bootstrap_returns_all(self):
+        current = {"wiki/ideas/A.md": "h1", "wiki/ideas/B.md": "h2"}
+        touched = compute_touched_pages(current, {})
+        assert touched == {"wiki/ideas/A.md", "wiki/ideas/B.md"}
+
+    def test_changed_page_detected(self):
+        current = {"wiki/ideas/A.md": "h1-new", "wiki/ideas/B.md": "h2"}
+        stored = {"wiki/ideas/A.md": "h1-old", "wiki/ideas/B.md": "h2"}
+        assert compute_touched_pages(current, stored) == {"wiki/ideas/A.md"}
+
+    def test_new_page_detected(self):
+        # Page in current but not stored = new = touched
+        current = {"wiki/ideas/A.md": "h1", "wiki/ideas/B.md": "h2"}
+        stored = {"wiki/ideas/A.md": "h1"}
+        assert compute_touched_pages(current, stored) == {"wiki/ideas/B.md"}
+
+    def test_no_changes_empty(self):
+        current = {"wiki/ideas/A.md": "h1", "wiki/ideas/B.md": "h2"}
+        assert compute_touched_pages(current, current) == set()
+
+    def test_deleted_page_not_touched(self):
+        # Page in stored but not current — gone, not "touched"
+        current = {"wiki/ideas/A.md": "h1"}
+        stored = {"wiki/ideas/A.md": "h1", "wiki/ideas/B.md": "h2"}
+        assert compute_touched_pages(current, stored) == set()
+
+
+class TestIssueInvolvesPages:
+    def test_where_field_matches(self):
+        i = Issue("dead-link", {"where": "wiki/ideas/A.md", "what": "[[X]]"})
+        assert issue_involves_pages(i, {"wiki/ideas/A.md"})
+        assert not issue_involves_pages(i, {"wiki/ideas/B.md"})
+
+    def test_pairwise_either_side_matches(self):
+        i = Issue("contradiction", {
+            "page_a": "wiki/ideas/A.md",
+            "page_b": "wiki/ideas/B.md",
+            "claim": "...",
+        })
+        assert issue_involves_pages(i, {"wiki/ideas/A.md"})
+        assert issue_involves_pages(i, {"wiki/ideas/B.md"})
+        assert not issue_involves_pages(i, {"wiki/ideas/C.md"})
+
+    def test_mentioned_in_list_matches(self):
+        i = Issue("missing-concept", {
+            "term": "GAE",
+            "mentioned_in": [
+                "wiki/ideas/PPO.md",
+                "wiki/ideas/Advantage Function.md",
+            ],
+        })
+        assert issue_involves_pages(i, {"wiki/ideas/PPO.md"})
+        assert not issue_involves_pages(i, {"wiki/entities/X.md"})
+
+    def test_empty_set_matches_nothing(self):
+        i = Issue("dead-link", {"where": "wiki/ideas/A.md", "what": "[[X]]"})
+        assert not issue_involves_pages(i, set())
 
 
 # ────────────────────────────────────────────────────────────────────────
