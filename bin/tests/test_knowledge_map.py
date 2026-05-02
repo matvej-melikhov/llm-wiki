@@ -1,9 +1,9 @@
 """Unit tests for bin/knowledge_map.py.
 
 Covers data preparation, color blending, edge construction, statistics,
-and artifact-page rendering. The viz parts (Plotly, UMAP) are not unit-
-tested — they depend on optional packages and randomness; smoke-test via
-live run instead.
+and artifact-page rendering. The viz parts (UMAP projection, Cytoscape
+HTML rendering) are not unit-tested — they depend on optional packages
+and randomness; smoke-test via live run instead.
 """
 
 from __future__ import annotations
@@ -97,7 +97,7 @@ class TestColorHelpers:
         assert hex_to_rgb("#FFFFFF") == (255, 255, 255)
 
     def test_hex_to_rgb_handles_rgb_function(self):
-        # Plotly's qualitative.Bold etc. return colors like "rgb(127, 60, 141)"
+        # Some palettes return CSS-style "rgb(127, 60, 141)" instead of hex.
         assert hex_to_rgb("rgb(127, 60, 141)") == (127, 60, 141)
         assert hex_to_rgb("rgb(0,0,0)") == (0, 0, 0)
         assert hex_to_rgb("rgb(255, 255, 255)") == (255, 255, 255)
