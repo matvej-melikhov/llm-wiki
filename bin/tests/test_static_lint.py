@@ -366,6 +366,32 @@ class TestCheckStatusNotInEnum:
         issues = issues_of(check_status_not_in_enum([p]))
         assert "fix" in issues[0].payload
 
+    def test_mind_draft_ok(self):
+        p = make_page(folder="minds", fm_yaml="type: mind\nstatus: draft")
+        assert types_of(check_status_not_in_enum([p])) == []
+
+    def test_mind_stable_ok(self):
+        p = make_page(folder="minds", fm_yaml="type: mind\nstatus: stable")
+        assert types_of(check_status_not_in_enum([p])) == []
+
+    def test_mind_deprecated_ok(self):
+        p = make_page(folder="minds", fm_yaml="type: mind\nstatus: deprecated")
+        assert types_of(check_status_not_in_enum([p])) == []
+
+    def test_mind_in_progress_flagged(self):
+        # 'in-progress' is valid for ideas but NOT for mind — different enum
+        p = make_page(folder="minds", fm_yaml="type: mind\nstatus: in-progress")
+        issues = issues_of(check_status_not_in_enum([p]))
+        assert len(issues) == 1
+        assert issues[0].type == "status-not-in-enum"
+        assert issues[0].payload["value"] == "in-progress"
+
+    def test_mind_fix_suggestion_is_draft(self):
+        # default fix for mind is "draft", not "in-progress"
+        p = make_page(folder="minds", fm_yaml="type: mind\nstatus: ready")
+        issues = issues_of(check_status_not_in_enum([p]))
+        assert issues[0].payload["fix"] == "draft"
+
 
 # ────────────────────────────────────────────────────────────────────────
 # _load_template_field_names
@@ -747,6 +773,16 @@ class TestCheckOrphan:
         orphan_pages = [i.payload["where"] for i in check_orphan([a, b])]
         assert not any(w.endswith("/B.md") for w in orphan_pages)
 
+    def test_deprecated_page_exempt(self):
+        # status: deprecated pages aren't expected to have inbound links —
+        # they've been replaced by a newer revision (supersedes flow in brainstorm).
+        p = make_page(
+            name="Old-Mind",
+            folder="minds",
+            fm_yaml="type: mind\nstatus: deprecated",
+        )
+        assert types_of(check_orphan([p])) == []
+
 
 # ────────────────────────────────────────────────────────────────────────
 # check_asymmetric_related
@@ -778,6 +814,24 @@ class TestCheckAsymmetricRelated:
         issues = issues_of(check_asymmetric_related([a]))
         # Ghost doesn't exist in by_name → continue (no asymmetric issue)
         assert types_of(issues_of(check_asymmetric_related([a]))) == []
+
+    def test_mind_to_idea_asymmetric_ok(self):
+        # mind→idea is a one-way reference by design. The encyclopedia idea
+        # shouldn't carry backlinks to every author note that mentions it —
+        # Obsidian's backlinks pane already surfaces them at the UI level.
+        m = make_page(
+            name="MyMind",
+            folder="minds",
+            fm_yaml='type: mind\nrelated:\n  - "[[X]]"',
+        )
+        x = make_page(name="X", fm_yaml="type: idea\nrelated: []")
+        assert types_of(check_asymmetric_related([m, x])) == []
+
+    def test_idea_to_mind_asymmetric_ok(self):
+        # Same skip applies if the mind is page_b — direction shouldn't matter.
+        m = make_page(name="MyMind", folder="minds", fm_yaml="type: mind\nrelated: []")
+        x = make_page(name="X", fm_yaml='type: idea\nrelated:\n  - "[[MyMind]]"')
+        assert types_of(check_asymmetric_related([x, m])) == []
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -1465,6 +1519,29 @@ class TestCheckSynthesisDrift:
         # Wiki vec equals centroid of sources → very low drift
         issues = list(check_synthesis_drift([page], wiki_idx, raw_idx))
         assert len(issues) == 0
+
+    def test_mind_type_skipped(self):
+        # mind pages are author reflections, not source syntheses — drift is
+        # not a meaningful signal. The check must skip them entirely, even when
+        # other (non-mind) pages have the variance needed for the threshold to fire.
+        good_pages = [
+            make_page(name=f"G{i}", fm_yaml=f'type: idea\nsources:\n  - "[[raw/s{i}]]"')
+            for i in range(5)
+        ]
+        # Mind orthogonal to its source — would be flagged if check applied
+        mind = make_page(
+            name="MyMind",
+            folder="minds",
+            fm_yaml='type: mind\nsources:\n  - "[[raw/brainstorm/test]]"',
+        )
+        wiki_pairs = [(f"G{i}", [1.0, 0.0, 0.0]) for i in range(5)]
+        raw_pairs = [(f"s{i}.md", [1.0, 0.0, 0.0]) for i in range(5)]
+        wiki_pairs.append(("MyMind", [0.0, 1.0, 0.0]))
+        raw_pairs.append(("brainstorm/test.md", [1.0, 0.0, 0.0]))
+        wiki_idx = _make_idx(wiki_pairs)
+        raw_idx = _make_idx(raw_pairs)
+        issues = list(check_synthesis_drift(good_pages + [mind], wiki_idx, raw_idx))
+        assert not any(i.payload["where"].endswith("/MyMind.md") for i in issues)
 
 
 # ────────────────────────────────────────────────────────────────────────
