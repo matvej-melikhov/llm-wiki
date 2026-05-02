@@ -30,7 +30,7 @@ from knowledge_map import (
     rgb_to_hex,
 )
 from embed import EmbedIndex
-from lint import parse_frontmatter, Page
+from static_lint import parse_frontmatter, Page
 
 
 # ────────────────────────────────────────────────────────────────────────

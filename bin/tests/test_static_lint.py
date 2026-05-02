@@ -1,12 +1,12 @@
-"""Unit tests for bin/lint.py — Layer 1 deterministic lint.
+"""Unit tests for bin/static_lint.py — Layer 1 static lint.
 
-Coverage: all 16 registered checks + frontmatter parser + wikilink extractor.
+Coverage: registered checks + frontmatter parser + wikilink extractor.
 
 Design notes:
-- Every check function is pure (list[Page] → Iterable[Issue]) — no I/O needed
-  for 13 of 16 checks. Tests build Page objects directly via make_page().
-- Three filesystem-dependent checks (stale-index, missing-index,
-  binary-source) use pytest tmp_path + monkeypatch on module-level constants.
+- Every check function is pure (list[Page] → Iterable[Issue]) — no I/O for
+  most checks. Tests build Page objects directly via make_page().
+- Filesystem-dependent checks (binary-source) use pytest tmp_path +
+  monkeypatch on module-level constants.
 - "Clean" case + "violation" case + key edge cases for each check.
 """
 
@@ -21,10 +21,9 @@ import pytest
 # Make `bin/` importable regardless of cwd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import lint as L
-from lint import (
+import static_lint as L
+from static_lint import (
     Issue, Page,
-    _expected_tag_casing,
     _extract_wikilinks,
     _normalize_wiki_target,
     _normalize_wikilink_text,
@@ -34,11 +33,8 @@ from lint import (
     check_binary_source_outside_formats,
     check_dangling_domain_ref,
     check_dead_link,
-    check_empty_section,
     check_folder_type_mismatch,
     check_inline_tags,
-    check_legacy_field,
-    check_lowercase_tags,
     check_missing_summary,
     check_non_canonical_wikilink,
     check_orphan,
@@ -46,7 +42,6 @@ from lint import (
     check_raw_ref_in_body,
     check_similar_but_unlinked,
     check_status_not_in_enum,
-    check_status_on_entity,
     check_synthesis_drift,
     compute_contradiction_candidates,
     compute_wiki_hash,
@@ -138,41 +133,6 @@ class TestParseFrontmatter:
         text = "---\ndomain:\n---\n"
         fm, _ = parse_frontmatter(text)
         assert fm.fields["domain"] is None
-
-
-# ────────────────────────────────────────────────────────────────────────
-# Tag casing heuristic
-# ────────────────────────────────────────────────────────────────────────
-
-
-class TestExpectedTagCasing:
-    def test_all_uppercase_ok(self):
-        assert _expected_tag_casing("ML") is None
-        assert _expected_tag_casing("NLP") is None
-        assert _expected_tag_casing("RLHF") is None
-
-    def test_known_abbreviation_correct_case(self):
-        assert _expected_tag_casing("LoRA") is None
-
-    def test_known_abbreviation_wrong_case_returns_canonical(self):
-        result = _expected_tag_casing("ml")
-        assert result == "ML"
-
-    def test_capitalized_word_ok(self):
-        assert _expected_tag_casing("Alignment") is None
-        assert _expected_tag_casing("Optimization") is None
-
-    def test_lowercase_word_flagged(self):
-        result = _expected_tag_casing("alignment")
-        assert result is not None
-        assert result[0].isupper()
-
-    def test_mixed_case_starts_uppercase_ok(self):
-        # KMeans, MapReduce — can't tell without a dictionary, accept
-        assert _expected_tag_casing("KMeans") is None
-
-    def test_empty_tag(self):
-        assert _expected_tag_casing("") is None
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -390,83 +350,6 @@ class TestCheckStatusNotInEnum:
         p = make_page(fm_yaml="type: idea\nstatus: done")
         issues = issues_of(check_status_not_in_enum([p]))
         assert "fix" in issues[0].payload
-
-
-# ────────────────────────────────────────────────────────────────────────
-# check_status_on_entity
-# ────────────────────────────────────────────────────────────────────────
-
-
-class TestCheckStatusOnEntity:
-    def test_entity_without_status_ok(self):
-        p = make_page(folder="entities", fm_yaml="type: entity\nentity_type: person")
-        assert types_of(check_status_on_entity([p])) == []
-
-    def test_entity_with_status_flagged(self):
-        p = make_page(folder="entities", fm_yaml="type: entity\nstatus: ready")
-        issues = issues_of(check_status_on_entity([p]))
-        assert len(issues) == 1
-        assert issues[0].type == "status-on-entity"
-
-    def test_non_entity_ignored(self):
-        p = make_page(fm_yaml="type: idea\nstatus: ready")
-        assert types_of(check_status_on_entity([p])) == []
-
-
-# ────────────────────────────────────────────────────────────────────────
-# check_legacy_field
-# ────────────────────────────────────────────────────────────────────────
-
-
-class TestCheckLegacyField:
-    def test_no_legacy_fields_ok(self):
-        p = make_page(fm_yaml="type: idea\nstatus: ready")
-        assert types_of(check_legacy_field([p])) == []
-
-    def test_title_field_flagged(self):
-        p = make_page(fm_yaml='type: idea\ntitle: "My Idea"')
-        issues = issues_of(check_legacy_field([p]))
-        assert any(i.payload["field"] == "title" for i in issues)
-
-    def test_complexity_field_flagged(self):
-        p = make_page(fm_yaml="type: idea\ncomplexity: high")
-        issues = issues_of(check_legacy_field([p]))
-        assert any(i.payload["field"] == "complexity" for i in issues)
-
-    def test_first_mentioned_flagged(self):
-        p = make_page(fm_yaml="type: entity\nfirst_mentioned: 2024-01-01")
-        issues = issues_of(check_legacy_field([p]))
-        assert any(i.payload["field"] == "first_mentioned" for i in issues)
-
-    def test_meta_page_exempt(self):
-        p = make_page(folder="meta", fm_yaml='type: meta\ntitle: "Cache"')
-        assert types_of(check_legacy_field([p])) == []
-
-
-# ────────────────────────────────────────────────────────────────────────
-# check_lowercase_tags
-# ────────────────────────────────────────────────────────────────────────
-
-
-class TestCheckLowercaseTags:
-    def test_correct_tags_ok(self):
-        p = make_page(fm_yaml="type: idea\ntags:\n  - ML\n  - Alignment")
-        assert types_of(check_lowercase_tags([p])) == []
-
-    def test_lowercase_tag_flagged(self):
-        p = make_page(fm_yaml="type: idea\ntags:\n  - ml\n  - rl")
-        issues = issues_of(check_lowercase_tags([p]))
-        assert len(issues) == 1
-        assert issues[0].type == "lowercase-tags"
-        assert "ml" in issues[0].payload["tags"]
-
-    def test_lora_correct_casing_ok(self):
-        p = make_page(fm_yaml="type: idea\ntags:\n  - LoRA")
-        assert types_of(check_lowercase_tags([p])) == []
-
-    def test_no_tags_ok(self):
-        p = make_page(fm_yaml="type: idea")
-        assert types_of(check_lowercase_tags([p])) == []
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -727,48 +610,6 @@ class TestCheckDanglingDomainRef:
     def test_no_domain_field_ok(self):
         p = make_page(fm_yaml="type: idea")
         assert types_of(check_dangling_domain_ref([p])) == []
-
-
-# ────────────────────────────────────────────────────────────────────────
-# check_empty_section
-# ────────────────────────────────────────────────────────────────────────
-
-
-class TestCheckEmptySection:
-    def test_section_with_content_ok(self):
-        body = "## Суть\n\nHere is some content.\n"
-        p = make_page(fm_yaml="type: idea", body=body)
-        assert types_of(check_empty_section([p])) == []
-
-    def test_empty_section_flagged(self):
-        body = "## Суть\n\n## Контекст\n\nSome context.\n"
-        p = make_page(fm_yaml="type: idea", body=body)
-        issues = issues_of(check_empty_section([p]))
-        assert any(i.type == "empty-section" for i in issues)
-        assert any(i.payload["section"] == "Суть" for i in issues)
-
-    def test_html_comment_not_content(self):
-        # <!-- placeholder --> should NOT count as content
-        body = "## Суть\n\n<!-- placeholder -->\n\n## Контекст\n\nOK\n"
-        p = make_page(fm_yaml="type: idea", body=body)
-        issues = issues_of(check_empty_section([p]))
-        assert any(i.payload.get("section") == "Суть" for i in issues)
-
-    def test_fenced_code_block_is_content(self):
-        body = "## Суть\n\n```python\ncode here\n```\n"
-        p = make_page(fm_yaml="type: idea", body=body)
-        assert types_of(check_empty_section([p])) == []
-
-    def test_meta_page_exempt(self):
-        body = "## Empty\n\n## Also Empty\n"
-        p = make_page(folder="meta", fm_yaml="type: meta", body=body)
-        assert types_of(check_empty_section([p])) == []
-
-    def test_nested_heading_not_empty_outer(self):
-        body = "## Суть\n\n### Подраздел\n\nContent here.\n"
-        p = make_page(fm_yaml="type: idea", body=body)
-        # ## Суть contains content via its nested heading
-        assert types_of(check_empty_section([p])) == []
 
 
 # ────────────────────────────────────────────────────────────────────────
