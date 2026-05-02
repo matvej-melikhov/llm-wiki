@@ -104,7 +104,7 @@ Vault разделён на четыре слоя по жизненному ци
 | Скрипт | Запись | Назначение |
 |---|---|---|
 | `bin/embed.py` | `wiki/meta/embeddings.json` | Обновляет эмбеддинги для approx-lint. **Запускается Stop-hook'ом** в `.claude/settings.json` после каждого turn'а — скиллы про это не знают и не вызывают вручную. Hash-skip пропускает неизменённые страницы. |
-| `bin/static_lint.py` | `wiki/meta/lint-reports/lint-state.json` | Программные проверки (12 типов issues) + опц. `--approx` для embedding-based. |
+| `bin/static_lint.py` | `wiki/meta/lint-reports/lint-state.json` | Программные проверки (13 типов issues) + опц. `--approx` для embedding-based. |
 | `bin/knowledge_map.py` | `wiki/meta/kn-maps/knowledge-map-*.md` | Снимок графа знаний. |
 | `bin/transcribe.py` | `raw/<имя>.md` | Конвертация бинарных источников. |
 | `bin/gen_dashboards.py` | `wiki/meta/dashboards/*.base` (только если файла нет) | Генерирует дефолтные дашборды для каждого `wiki/domains/*.md` и глобальный `dashboard.base`. **Запускается Stop-hook'ом** (async, ~100ms). Существующие `.base` не перезаписывает — ручные правки выживают. |

@@ -25,6 +25,7 @@ import static_lint as L
 from static_lint import (
     Issue, Page,
     _extract_wikilinks,
+    _load_template_field_names,
     _normalize_wiki_target,
     _normalize_wikilink_text,
     _parse_yaml_subset,
@@ -35,6 +36,7 @@ from static_lint import (
     check_dead_link,
     check_folder_type_mismatch,
     check_inline_tags,
+    check_invalid_fields,
     check_missing_summary,
     check_non_canonical_wikilink,
     check_orphan,
@@ -338,7 +340,7 @@ class TestCheckStatusNotInEnum:
         assert issues[0].payload["value"] == "stable"
 
     def test_entity_skipped(self):
-        # entity status is handled by check_status_on_entity instead
+        # entity status is handled by check_invalid_fields (extra field) instead
         p = make_page(folder="entities", fm_yaml="type: entity\nstatus: stable")
         assert types_of(check_status_not_in_enum([p])) == []
 
@@ -350,6 +352,162 @@ class TestCheckStatusNotInEnum:
         p = make_page(fm_yaml="type: idea\nstatus: done")
         issues = issues_of(check_status_not_in_enum([p]))
         assert "fix" in issues[0].payload
+
+
+# ────────────────────────────────────────────────────────────────────────
+# _load_template_field_names
+# ────────────────────────────────────────────────────────────────────────
+
+
+class TestLoadTemplateFieldNames:
+    def test_loads_all_templates(self, tmp_path, monkeypatch):
+        templates = tmp_path / "_templates"
+        templates.mkdir()
+        (templates / "idea.md").write_text(
+            "---\ntype: idea\nstatus: evaluation\ntags: []\n---\n"
+        )
+        (templates / "entity.md").write_text(
+            "---\ntype: entity\nentity_type: person\nrole: ''\n---\n"
+        )
+        monkeypatch.setattr(L, "TEMPLATES_DIR", templates)
+        result = _load_template_field_names()
+        assert result["idea"] == {"type", "status", "tags"}
+        assert result["entity"] == {"type", "entity_type", "role"}
+
+    def test_missing_directory_returns_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(L, "TEMPLATES_DIR", tmp_path / "nonexistent")
+        assert _load_template_field_names() == {}
+
+    def test_template_without_frontmatter_skipped(self, tmp_path, monkeypatch):
+        templates = tmp_path / "_templates"
+        templates.mkdir()
+        (templates / "broken.md").write_text("just text, no frontmatter")
+        (templates / "idea.md").write_text("---\ntype: idea\n---\n")
+        monkeypatch.setattr(L, "TEMPLATES_DIR", templates)
+        result = _load_template_field_names()
+        assert "broken" not in result
+        assert "idea" in result
+
+
+# ────────────────────────────────────────────────────────────────────────
+# check_invalid_fields
+# ────────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def invalid_fields_schemas(tmp_path, monkeypatch):
+    """Set up minimal _templates/ for invalid-fields check."""
+    templates = tmp_path / "_templates"
+    templates.mkdir()
+    (templates / "idea.md").write_text(
+        "---\ntype: idea\nsummary: ''\nstatus: evaluation\n"
+        "tags: []\nrelated: []\nsources: []\n---\n"
+    )
+    (templates / "entity.md").write_text(
+        "---\ntype: entity\nsummary: ''\nentity_type: person\n"
+        "role: ''\ntags: []\n---\n"
+    )
+    monkeypatch.setattr(L, "TEMPLATES_DIR", templates)
+
+
+class TestCheckInvalidFields:
+    def test_clean_page_no_issues(self, invalid_fields_schemas):
+        p = make_page(fm_yaml=(
+            "type: idea\nsummary: 'x'\nstatus: ready\n"
+            "tags: []\nrelated: []\nsources: []"
+        ))
+        assert types_of(check_invalid_fields([p])) == []
+
+    def test_extra_field_flagged(self, invalid_fields_schemas):
+        p = make_page(fm_yaml=(
+            "type: idea\nsummary: 'x'\nstatus: ready\n"
+            "tags: []\nrelated: []\nsources: []\nfoobar: x"
+        ))
+        issues = issues_of(check_invalid_fields([p]))
+        assert len(issues) == 1
+        assert issues[0].type == "invalid-fields"
+        assert issues[0].payload["subtype"] == "extra"
+        assert issues[0].payload["field"] == "foobar"
+
+    def test_status_on_entity_caught(self, invalid_fields_schemas):
+        # Previously a separate check (status-on-entity), now subsumed
+        p = make_page(folder="entities", fm_yaml=(
+            "type: entity\nsummary: 'x'\nentity_type: person\n"
+            "role: 'r'\ntags: []\nstatus: ready"
+        ))
+        issues = issues_of(check_invalid_fields([p]))
+        assert any(
+            i.payload["subtype"] == "extra" and i.payload["field"] == "status"
+            for i in issues
+        )
+
+    def test_legacy_field_caught(self, invalid_fields_schemas):
+        # Previously check_legacy_field for title/complexity/first_mentioned
+        p = make_page(fm_yaml=(
+            "type: idea\nsummary: 'x'\nstatus: ready\n"
+            "tags: []\nrelated: []\nsources: []\ntitle: 'Old'"
+        ))
+        issues = issues_of(check_invalid_fields([p]))
+        assert any(
+            i.payload["subtype"] == "extra" and i.payload["field"] == "title"
+            for i in issues
+        )
+
+    def test_missing_field_flagged(self, invalid_fields_schemas):
+        p = make_page(fm_yaml=(
+            # missing related and sources
+            "type: idea\nsummary: 'x'\nstatus: ready\ntags: []"
+        ))
+        issues = issues_of(check_invalid_fields([p]))
+        missing = {
+            i.payload["field"] for i in issues
+            if i.payload["subtype"] == "missing"
+        }
+        assert missing == {"related", "sources"}
+
+    def test_missing_summary_skipped(self, invalid_fields_schemas):
+        # summary missing → handled by check_missing_summary, not invalid-fields
+        p = make_page(fm_yaml=(
+            # missing summary
+            "type: idea\nstatus: ready\ntags: []\nrelated: []\nsources: []"
+        ))
+        issues = issues_of(check_invalid_fields([p]))
+        for i in issues:
+            assert not (
+                i.payload["subtype"] == "missing"
+                and i.payload["field"] == "summary"
+            )
+
+    def test_multiple_extras_flagged_separately(self, invalid_fields_schemas):
+        p = make_page(fm_yaml=(
+            "type: idea\nsummary: 'x'\nstatus: ready\n"
+            "tags: []\nrelated: []\nsources: []\nfoo: 1\nbar: 2"
+        ))
+        issues = issues_of(check_invalid_fields([p]))
+        extras = {
+            i.payload["field"] for i in issues
+            if i.payload["subtype"] == "extra"
+        }
+        assert extras == {"foo", "bar"}
+
+    def test_meta_page_exempt(self, invalid_fields_schemas):
+        p = make_page(folder="meta", fm_yaml="type: meta\nfoo: bar")
+        assert types_of(check_invalid_fields([p])) == []
+
+    def test_unknown_type_exempt(self, invalid_fields_schemas):
+        # No template for "unknown" → no check (graceful degradation)
+        p = make_page(fm_yaml="type: unknown\nfoo: bar")
+        assert types_of(check_invalid_fields([p])) == []
+
+    def test_no_template_directory_no_crash(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(L, "TEMPLATES_DIR", tmp_path / "nope")
+        p = make_page(fm_yaml="type: idea\nfoo: bar")
+        # No template loaded → no issues (degrade gracefully)
+        assert types_of(check_invalid_fields([p])) == []
+
+    def test_no_frontmatter_no_crash(self, invalid_fields_schemas):
+        p = make_page(fm_yaml="", body="just body")
+        assert types_of(check_invalid_fields([p])) == []
 
 
 # ────────────────────────────────────────────────────────────────────────

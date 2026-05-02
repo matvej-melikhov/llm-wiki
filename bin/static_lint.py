@@ -46,6 +46,8 @@ LINT_STATE_PATH = WIKI_ROOT / "meta" / "lint-reports" / "lint-state.json"
 RAW_ROOT = Path("raw")
 RAW_FORMATS_DIR = RAW_ROOT / "formats"
 
+TEMPLATES_DIR = Path("_templates")
+
 # Binary extensions that should live in raw/formats/, not raw/ root
 BINARY_SOURCE_EXTENSIONS = {
     ".pdf", ".docx", ".doc",
@@ -317,22 +319,91 @@ class Issue:
 
 
 def check_status_not_in_enum(pages: list[Page]) -> Iterable[Issue]:
-    """status: must be one of evaluation/in-progress/ready (when present and
-    not on entity)."""
+    """status: must be one of evaluation/in-progress/ready (when present).
+
+    Entity pages are skipped — `status` doesn't belong there at all per
+    template, and `check_invalid_fields` will flag it as an extra field
+    (correct fix: remove, not change-to-valid-value).
+    """
     for p in pages:
         if p.fm is None:
             continue
+        if p.page_type == "entity":
+            continue
         status = p.fm.fields.get("status")
         if status is None:
-            continue
-        # entity has its own check that says status shouldn't even be there
-        if p.page_type == "entity":
             continue
         if status not in VALID_STATUSES:
             yield Issue("status-not-in-enum", {
                 "where": p.relpath(),
                 "value": status,
                 "fix": "in-progress",
+            })
+
+
+def _load_template_field_names() -> dict[str, set[str]]:
+    """Read `_templates/<type>.md` files, return type → set of field names
+    from frontmatter. Source of truth for `check_invalid_fields`.
+
+    Returns empty dict if templates directory is missing (degrade gracefully —
+    invalid-fields just won't fire).
+    """
+    schemas: dict[str, set[str]] = {}
+    if not TEMPLATES_DIR.is_dir():
+        return schemas
+    for tmpl in sorted(TEMPLATES_DIR.glob("*.md")):
+        type_name = tmpl.stem
+        try:
+            fm, _ = parse_frontmatter(tmpl.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if fm is None:
+            continue
+        schemas[type_name] = set(fm.fields.keys())
+    return schemas
+
+
+def check_invalid_fields(pages: list[Page]) -> Iterable[Issue]:
+    """Frontmatter has fields not in template (extra) or missing fields
+    from template. Source of truth — `_templates/<type>.md`.
+
+    Emits two subtypes:
+    - `subtype: "extra"` — field is in page frontmatter but not in template
+    - `subtype: "missing"` — field is in template but not in page
+
+    Skips:
+    - meta pages (no template, structure is operation-driven)
+    - pages with unknown `type:` (no matching template)
+    - `summary` for `subtype: "missing"` — covered by `check_missing_summary`
+      with agent-fix that generates content (vs script-fix here which would
+      just add empty placeholder)
+    """
+    schemas = _load_template_field_names()
+    for p in pages:
+        if p.fm is None:
+            continue
+        ptype = p.page_type
+        if ptype is None or ptype == "meta":
+            continue
+        expected = schemas.get(ptype)
+        if expected is None:
+            continue  # no template for this type
+        actual = set(p.fm.fields.keys())
+
+        for extra in sorted(actual - expected):
+            yield Issue("invalid-fields", {
+                "where": p.relpath(),
+                "subtype": "extra",
+                "field": extra,
+            })
+
+        for missing in sorted(expected - actual):
+            if missing == "summary":
+                continue  # has its own check (check_missing_summary)
+            yield Issue("invalid-fields", {
+                "where": p.relpath(),
+                "subtype": "missing",
+                "field": missing,
             })
 
 
@@ -848,6 +919,7 @@ def check_folder_type_mismatch(pages: list[Page]) -> Iterable[Issue]:
 # Registry: ordered list of (issue_type_string, check_function)
 _CHECKS: list[tuple[str, Any]] = [
     ("status-not-in-enum", check_status_not_in_enum),
+    ("invalid-fields", check_invalid_fields),
     ("inline-tags", check_inline_tags),
     ("non-canonical-wikilink", check_non_canonical_wikilink),
     ("folder-type-mismatch", check_folder_type_mismatch),

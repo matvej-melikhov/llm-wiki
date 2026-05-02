@@ -22,7 +22,7 @@ Lint **только читает** wiki и записывает структур
 
 Lint работает в два слоя плюс опциональный embedding-based слой:
 
-**Layer 1 — программная проверка (`bin/static_lint.py`).** Python-скрипт, реализующий все детерминистические проверки: 12 типов issues. Запускается за секунды, без LLM-стоимости. Пишет `lint-state.json` с найденными `open_issues`.
+**Layer 1 — программная проверка (`bin/static_lint.py`).** Python-скрипт, реализующий все детерминистические проверки: 13 типов issues. Запускается за секунды, без LLM-стоимости. Пишет `lint-state.json` с найденными `open_issues`.
 
 **Layer 1.5 — embedding-based (опционально, `--approx`).** Те же `bin/static_lint.py`, но с флагом `--approx` подключаются проверки на основе предварительно посчитанных эмбеддингов: `similar-but-unlinked` (semantic missing links) и `synthesis-drift` (детектор отклонения синтеза от источников). Чистые потребители векторов — embedding-сервер (Ollama или LMStudio через OpenAI-совместимый API) не нужен для lint, только `bin/embed.py update` должен быть выполнен заранее.
 
@@ -205,6 +205,7 @@ domain:
 | `type` | Условие | Структура issue |
 |---|---|---|
 | `status-not-in-enum` | `status` не из `evaluation/in-progress/ready` | `{type, where, value, fix: "in-progress"}` |
+| `invalid-fields` | frontmatter не соответствует схеме из `_templates/<type>.md`. Два subtype: `extra` (поле есть, в шаблоне нет — удалить) и `missing` (в шаблоне есть, у страницы нет — добавить с default из шаблона). Покрывает старые проверки `status-on-entity`, `legacy-field` и любые другие schema violations. Поле `summary` в `subtype: missing` не флагуется — для него отдельный check (`missing-summary`) с agent-fix | `{type, where, subtype, field}` |
 | `inline-tags` | `tags: [a, b]` инлайн вместо блочного YAML | `{type, where}` |
 | `raw-link-with-extension` | `[[raw/X.md]]` вместо `[[raw/X]]` | `{type, where, link}` |
 | `raw-ref-in-body` | упоминание `[[raw/...]]` в теле страницы | `{type, where, link, line}` |
