@@ -1717,7 +1717,7 @@ def main() -> int:
     if args.json:
         print(json.dumps(new_state, ensure_ascii=False, indent=2))
 
-    return 1 if remaining else 0
+    return 1 if merged else 0
 
 
 if __name__ == "__main__":

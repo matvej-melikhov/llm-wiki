@@ -16,7 +16,7 @@ Lint — единственный owner всего пайплайна обраб
 
 1. Запускает `bin/static_lint.py` (Layer 1 + script auto-fixes inline).
 2. Запускает Layer 2 — LLM-семантические проверки.
-3. Применяет agent auto-fixes (`missing-summary`, `domain-order`).
+3. Применяет agent auto-fixes (`missing-summary`, `domain-order`, `tag-casing`).
 4. Ведёт диалог с пользователем по оставшимся ask-issues.
 5. Перезаписывает `lint-state.json` финальным состоянием.
 
@@ -30,7 +30,8 @@ Lint — единственный owner всего пайплайна обраб
 ### Step 1. Запустить `bin/static_lint.py`
 
 ```bash
-python3 bin/static_lint.py [--approx]
+python3 bin/static_lint.py          # --quick (default)
+python3 bin/static_lint.py --full   # full audit
 ```
 
 Скрипт сам делает:
@@ -381,8 +382,8 @@ Lint нашёл проблемы, требующие решения:
 | `outdated-claim` | утверждение опровергнуто более новой | `{type, where, claim, conflicts_with}` |
 | `dangling-domain-ref` | `domain:` на несуществующую domain-страницу | `{type, where, missing_domain}` |
 | `asymmetric-related` | A.related → B без B.related → A | `{type, page_a, page_b}` |
-| `similar-but-unlinked` | две страницы близки, wikilink отсутствует (`--approx`) | `{type, page_a, page_b, similarity, threshold}` |
-| `synthesis-drift` | страница ушла далеко от центроида источников (`--approx`) | `{type, where, drift, threshold}` |
+| `similar-but-unlinked` | две страницы близки, wikilink отсутствует (если эмбеддинги доступны) | `{type, page_a, page_b, similarity, threshold}` |
+| `synthesis-drift` | страница ушла далеко от центроида источников (если эмбеддинги доступны) | `{type, where, drift, threshold}` |
 
 ### Skip
 
