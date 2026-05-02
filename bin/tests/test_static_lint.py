@@ -25,11 +25,21 @@ import static_lint as L
 from static_lint import (
     Issue, Page,
     _extract_wikilinks,
-    _load_template_field_names,
+    _fix_folder_type_mismatch_in_text,
+    _fix_inline_tags_in_text,
+    _fix_invalid_fields_extra_in_text,
+    _fix_invalid_fields_missing_in_text,
+    _fix_non_canonical_wikilink_in_text,
+    _fix_raw_link_with_extension_in_text,
+    _fix_raw_ref_in_body_in_text,
+    _fix_status_not_in_enum_in_text,
+    _load_template_schemas,
     _normalize_wiki_target,
     _normalize_wikilink_text,
     _parse_yaml_subset,
+    _resolve_templater,
     _wikilink_to_raw_key,
+    apply_auto_fixes,
     check_asymmetric_related,
     check_binary_source_outside_formats,
     check_dangling_domain_ref,
@@ -359,7 +369,7 @@ class TestCheckStatusNotInEnum:
 # ────────────────────────────────────────────────────────────────────────
 
 
-class TestLoadTemplateFieldNames:
+class TestLoadTemplateSchemas:
     def test_loads_all_templates(self, tmp_path, monkeypatch):
         templates = tmp_path / "_templates"
         templates.mkdir()
@@ -370,13 +380,37 @@ class TestLoadTemplateFieldNames:
             "---\ntype: entity\nentity_type: person\nrole: ''\n---\n"
         )
         monkeypatch.setattr(L, "TEMPLATES_DIR", templates)
-        result = _load_template_field_names()
-        assert result["idea"] == {"type", "status", "tags"}
-        assert result["entity"] == {"type", "entity_type", "role"}
+        result = _load_template_schemas()
+        assert set(result["idea"].keys()) == {"type", "status", "tags"}
+        assert set(result["entity"].keys()) == {"type", "entity_type", "role"}
+
+    def test_preserves_raw_entries(self, tmp_path, monkeypatch):
+        # Raw values matter for missing-field auto-fix
+        templates = tmp_path / "_templates"
+        templates.mkdir()
+        (templates / "idea.md").write_text(
+            "---\ntype: idea\nstatus: evaluation\ntags: []\nsummary: ''\n---\n"
+        )
+        monkeypatch.setattr(L, "TEMPLATES_DIR", templates)
+        result = _load_template_schemas()
+        assert result["idea"]["status"] == "status: evaluation"
+        assert result["idea"]["tags"] == "tags: []"
+        assert result["idea"]["summary"] == "summary: ''"
+
+    def test_preserves_multiline_block_lists(self, tmp_path, monkeypatch):
+        templates = tmp_path / "_templates"
+        templates.mkdir()
+        (templates / "domain.md").write_text(
+            "---\ntype: domain\ndomain:\n  - \"[[X]]\"\n  - \"[[Y]]\"\ntags: []\n---\n"
+        )
+        monkeypatch.setattr(L, "TEMPLATES_DIR", templates)
+        result = _load_template_schemas()
+        assert result["domain"]["domain"] == 'domain:\n  - "[[X]]"\n  - "[[Y]]"'
+        assert result["domain"]["tags"] == "tags: []"
 
     def test_missing_directory_returns_empty(self, tmp_path, monkeypatch):
         monkeypatch.setattr(L, "TEMPLATES_DIR", tmp_path / "nonexistent")
-        assert _load_template_field_names() == {}
+        assert _load_template_schemas() == {}
 
     def test_template_without_frontmatter_skipped(self, tmp_path, monkeypatch):
         templates = tmp_path / "_templates"
@@ -384,7 +418,7 @@ class TestLoadTemplateFieldNames:
         (templates / "broken.md").write_text("just text, no frontmatter")
         (templates / "idea.md").write_text("---\ntype: idea\n---\n")
         monkeypatch.setattr(L, "TEMPLATES_DIR", templates)
-        result = _load_template_field_names()
+        result = _load_template_schemas()
         assert "broken" not in result
         assert "idea" in result
 
@@ -852,6 +886,242 @@ class TestCheckBinarySourceOutsideFormats:
         meta.mkdir()
         (meta / "ingested.json").write_text("{}")
         assert types_of(check_binary_source_outside_formats([])) == []
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Auto-fix mutators (pure: text-in, text-out)
+# ────────────────────────────────────────────────────────────────────────
+
+
+def _fm_doc(fm_yaml: str, body: str = "") -> str:
+    """Build a full markdown document with frontmatter for fix tests."""
+    return f"---\n{fm_yaml}\n---\n{body}"
+
+
+class TestResolveTemplater:
+    def test_date_substituted(self):
+        from datetime import date
+        out = _resolve_templater('created: <% tp.date.now("YYYY-MM-DD") %>')
+        assert date.today().isoformat() in out
+        assert "tp.date" not in out
+
+    def test_title_substituted(self):
+        out = _resolve_templater(
+            'domain:\n  - "[[<% tp.file.title %>]]"', page_title="Foo Bar"
+        )
+        assert "Foo Bar" in out
+        assert "tp.file" not in out
+
+    def test_no_placeholder_unchanged(self):
+        assert _resolve_templater("status: evaluation") == "status: evaluation"
+
+
+class TestFixStatusNotInEnum:
+    def test_replaces_value(self):
+        doc = _fm_doc("type: idea\nstatus: stub")
+        out = _fix_status_not_in_enum_in_text(doc, {"fix": "in-progress"})
+        assert "status: in-progress" in out
+        assert "status: stub" not in out
+
+    def test_only_first_status_replaced(self):
+        # status appears in body — only frontmatter status touched
+        doc = _fm_doc("type: idea\nstatus: stub", body="The status: stub note.\n")
+        out = _fix_status_not_in_enum_in_text(doc, {"fix": "ready"})
+        assert "status: ready" in out
+        assert "The status: stub note." in out
+
+    def test_no_frontmatter_no_change(self):
+        out = _fix_status_not_in_enum_in_text("just text", {"fix": "ready"})
+        assert out == "just text"
+
+
+class TestFixFolderTypeMismatch:
+    def test_replaces_type(self):
+        doc = _fm_doc("type: idea\nstatus: ready")
+        out = _fix_folder_type_mismatch_in_text(doc, {"expected_type": "entity"})
+        assert "type: entity" in out
+        assert "type: idea" not in out
+
+
+class TestFixInlineTags:
+    def test_simple_inline_to_block(self):
+        doc = _fm_doc("type: idea\ntags: [ML, RL]")
+        out = _fix_inline_tags_in_text(doc, {})
+        assert "tags:\n  - ML\n  - RL" in out
+        assert "tags: [" not in out
+
+    def test_quoted_items_unquoted(self):
+        doc = _fm_doc('type: idea\ntags: ["ML", "RL"]')
+        out = _fix_inline_tags_in_text(doc, {})
+        assert "tags:\n  - ML\n  - RL" in out
+
+    def test_empty_list_stays_inline(self):
+        doc = _fm_doc("type: idea\ntags: []")
+        out = _fix_inline_tags_in_text(doc, {})
+        assert "tags: []" in out
+
+    def test_no_tags_no_change(self):
+        doc = _fm_doc("type: idea\nstatus: ready")
+        out = _fix_inline_tags_in_text(doc, {})
+        assert out == doc
+
+
+class TestFixNonCanonicalWikilink:
+    def test_replaces_link(self):
+        doc = "see [[wiki/ideas/RLHF]] here"
+        out = _fix_non_canonical_wikilink_in_text(
+            doc, {"link": "[[wiki/ideas/RLHF]]", "fix": "[[RLHF]]"}
+        )
+        assert out == "see [[RLHF]] here"
+
+    def test_replaces_all_occurrences(self):
+        doc = "[[wiki/ideas/X]] then [[wiki/ideas/X]]"
+        out = _fix_non_canonical_wikilink_in_text(
+            doc, {"link": "[[wiki/ideas/X]]", "fix": "[[X]]"}
+        )
+        assert out == "[[X]] then [[X]]"
+
+
+class TestFixRawLinkWithExtension:
+    def test_strips_md(self):
+        doc = _fm_doc('type: idea\nsources:\n  - "[[raw/articles/X.md]]"')
+        out = _fix_raw_link_with_extension_in_text(
+            doc, {"link": "[[raw/articles/X.md]]"}
+        )
+        assert '"[[raw/articles/X]]"' in out
+        assert ".md]]" not in out
+
+
+class TestFixRawRefInBody:
+    def test_removes_ref_with_leading_space(self):
+        doc = _fm_doc("type: idea", body="From [[raw/X]] we know.")
+        out = _fix_raw_ref_in_body_in_text(doc, {"link": "[[raw/X]]"})
+        assert "[[raw/X]]" not in out
+        assert "From we know." in out
+
+    def test_frontmatter_untouched(self):
+        # raw link in sources frontmatter should NOT be removed
+        doc = _fm_doc(
+            'type: idea\nsources:\n  - "[[raw/X]]"',
+            body="text [[raw/X]] more",
+        )
+        out = _fix_raw_ref_in_body_in_text(doc, {"link": "[[raw/X]]"})
+        assert '"[[raw/X]]"' in out  # frontmatter intact
+        # body version removed
+        assert "text  more" in out or "text more" in out
+
+
+class TestFixInvalidFieldsExtra:
+    def test_removes_simple_field(self):
+        doc = _fm_doc("type: idea\nstatus: ready\nfoobar: x\ntags: []")
+        out = _fix_invalid_fields_extra_in_text(doc, {"field": "foobar"})
+        assert "foobar" not in out
+        assert "type: idea" in out
+        assert "tags: []" in out
+
+    def test_removes_multiline_block(self):
+        doc = _fm_doc(
+            'type: idea\ndomain:\n  - "[[X]]"\n  - "[[Y]]"\ntags: []'
+        )
+        out = _fix_invalid_fields_extra_in_text(doc, {"field": "domain"})
+        assert "domain" not in out
+        assert "[[X]]" not in out
+        assert "[[Y]]" not in out
+        assert "tags: []" in out
+
+    def test_field_not_present_no_change(self):
+        doc = _fm_doc("type: idea\nstatus: ready")
+        out = _fix_invalid_fields_extra_in_text(doc, {"field": "missing"})
+        assert out == doc
+
+
+class TestFixInvalidFieldsMissing:
+    def test_appends_field_with_default(self):
+        schemas = {
+            "idea": {"status": "status: evaluation", "tags": "tags: []"}
+        }
+        doc = _fm_doc("type: idea")
+        out = _fix_invalid_fields_missing_in_text(
+            doc, {"field": "status"}, schemas=schemas
+        )
+        assert "status: evaluation" in out
+
+    def test_appends_multiline_default(self):
+        schemas = {
+            "idea": {"domain": 'domain:\n  - "[[X]]"\n  - "[[Y]]"'}
+        }
+        doc = _fm_doc("type: idea\nstatus: ready")
+        out = _fix_invalid_fields_missing_in_text(
+            doc, {"field": "domain"}, schemas=schemas
+        )
+        assert 'domain:\n  - "[[X]]"\n  - "[[Y]]"' in out
+
+    def test_substitutes_templater_date(self):
+        from datetime import date
+        schemas = {
+            "idea": {"created": 'created: <% tp.date.now("YYYY-MM-DD") %>'}
+        }
+        doc = _fm_doc("type: idea")
+        out = _fix_invalid_fields_missing_in_text(
+            doc, {"field": "created"}, schemas=schemas
+        )
+        assert f"created: {date.today().isoformat()}" in out
+
+    def test_unknown_type_no_change(self):
+        schemas = {"idea": {"status": "status: evaluation"}}
+        doc = _fm_doc("type: unknown")
+        out = _fix_invalid_fields_missing_in_text(
+            doc, {"field": "status"}, schemas=schemas
+        )
+        assert out == doc
+
+
+# ────────────────────────────────────────────────────────────────────────
+# apply_auto_fixes integration
+# ────────────────────────────────────────────────────────────────────────
+
+
+class TestApplyAutoFixes:
+    def test_fixable_issue_fixed_and_dropped(self, tmp_path, monkeypatch):
+        f = tmp_path / "page.md"
+        f.write_text(_fm_doc("type: idea\nstatus: stub"))
+        issues = [Issue("status-not-in-enum", {
+            "where": str(f), "value": "stub", "fix": "in-progress"
+        })]
+        remaining, fixed = apply_auto_fixes(issues)
+        assert fixed == 1
+        assert remaining == []
+        assert "status: in-progress" in f.read_text()
+
+    def test_unfixable_issue_kept(self):
+        issues = [Issue("dead-link", {"where": "x.md", "what": "[[Y]]"})]
+        remaining, fixed = apply_auto_fixes(issues)
+        assert fixed == 0
+        assert len(remaining) == 1
+        assert remaining[0].type == "dead-link"
+
+    def test_mixed_issues(self, tmp_path):
+        f = tmp_path / "page.md"
+        f.write_text(_fm_doc("type: idea\nstatus: bad"))
+        issues = [
+            Issue("status-not-in-enum", {
+                "where": str(f), "value": "bad", "fix": "ready"
+            }),
+            Issue("dead-link", {"where": str(f), "what": "[[Z]]"}),
+        ]
+        remaining, fixed = apply_auto_fixes(issues)
+        assert fixed == 1
+        assert len(remaining) == 1
+        assert remaining[0].type == "dead-link"
+
+    def test_failed_fix_kept_as_remaining(self):
+        # Path that doesn't exist → fix returns False → issue kept
+        issues = [Issue("status-not-in-enum", {
+            "where": "/nonexistent/page.md", "value": "x", "fix": "ready"
+        })]
+        remaining, fixed = apply_auto_fixes(issues)
+        assert fixed == 0
+        assert len(remaining) == 1
 
 
 # ────────────────────────────────────────────────────────────────────────

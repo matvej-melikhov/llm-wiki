@@ -12,9 +12,7 @@ description: >
 
 # lint: ревьюер wiki
 
-Lint **только читает** wiki и записывает структурированный отчёт. **Никаких правок в content-файлы (`wiki/ideas/`, `wiki/entities/` и т.д.)** — фиксы делает `ingest` по этому отчёту.
-
-Единственный файл, который lint имеет право писать — `wiki/meta/lint-reports/lint-state.json`.
+Lint детектит проблемы и **применяет script-auto-fixes inline** (Layer 1, `bin/static_lint.py` пишет в content-файлы). Issues, требующие LLM (agent-fix) или решения пользователя (ask), остаются в `lint-state.json::open_issues` для последующей обработки lint-скиллом или ingest'ом.
 
 ---
 
@@ -22,7 +20,7 @@ Lint **только читает** wiki и записывает структур
 
 Lint работает в два слоя плюс опциональный embedding-based слой:
 
-**Layer 1 — программная проверка (`bin/static_lint.py`).** Python-скрипт, реализующий все детерминистические проверки: 13 типов issues. Запускается за секунды, без LLM-стоимости. Пишет `lint-state.json` с найденными `open_issues`.
+**Layer 1 — программная проверка + script auto-fix (`bin/static_lint.py`).** Python-скрипт, реализующий все детерминистические проверки (13 типов issues). После детекта применяет автоматические правки для script-fixable типов (`status-not-in-enum`, `invalid-fields`, `inline-tags`, `non-canonical-wikilink`, `folder-type-mismatch`, `raw-link-with-extension`, `raw-ref-in-body`, `binary-source-outside-formats`). В `lint-state.json::open_issues` остаются только агентские (`missing-summary`) и ask-issues. Запускается за секунды, без LLM-стоимости.
 
 **Layer 1.5 — embedding-based (опционально, `--approx`).** Те же `bin/static_lint.py`, но с флагом `--approx` подключаются проверки на основе предварительно посчитанных эмбеддингов: `similar-but-unlinked` (semantic missing links) и `synthesis-drift` (детектор отклонения синтеза от источников). Чистые потребители векторов — embedding-сервер (Ollama или LMStudio через OpenAI-совместимый API) не нужен для lint, только `bin/embed.py update` должен быть выполнен заранее.
 
